@@ -121,11 +121,11 @@ fn broadcast(members: List(Member), what: ClientMsg) -> Nil {
 }
 
 fn by_name(name: String) -> fn(Member) -> Bool {
-  fn(member) { member.name == name }
+  fn(member: Member) { member.name == name }
 }
 
 fn by_monitor(monitor: Monitor) -> fn(Member) -> Bool {
-  fn(member) { member.monitor == monitor }
+  fn(member: Member) { member.monitor == monitor }
 }
 
 /// 从名单里摘出一个成员，返回它和剩下的名单。

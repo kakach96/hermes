@@ -33,8 +33,12 @@ pub fn dead_member_broadcasts_down_test() {
   let operator = process.new_subject()
   room.join(hall, "Operator", process.self(), operator)
 
-  let assert Ok(actor.Started(guest_pid, _guest_inbox)) = client.start("Guest")
-  let assert ["Guest", "Operator"] = room.join(hall, "Guest", guest_pid, _guest_inbox)
+  let assert Ok(actor.Started(guest_pid, guest_inbox)) = client.start("Guest")
+  let assert ["Guest", "Operator"] = room.join(hall, "Guest", guest_pid, guest_inbox)
+
+  // Operator 自己的入房广播先到（入房通知广播给所有成员，包括新成员自己）
+  let assert Ok(client.Notice("Operator 加入了房间")) =
+    process.receive(operator, 2000)
 
   // 入房通知先到
   let assert Ok(client.Notice("Guest 加入了房间")) =

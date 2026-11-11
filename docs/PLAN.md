@@ -27,7 +27,7 @@
 
 ## 路线图
 
-### Phase 1：Gleam Actor 聊天室 ✅（骨架已完成，待用户本机验证）
+### Phase 1：Gleam Actor 聊天室 ✅（已通过本机验证：gleam 1.19.2 / OTP 29.1.2）
 
 覆盖：`spawn / send / receive / call / monitor / selector / named_subject / static_supervisor`。
 
@@ -84,3 +84,6 @@
 | 1 | 自定义 selector 后默认 subject 不自动注册 | initialiser 里手动 `process.select(subject)` |
 | 1 | 迟到的 'DOWN'（demonitor 前已投递） | 处理时兜底吞掉未知 monitor |
 | 1 | `process.new_name` 动态调用烧原子表 | 入口创建一次，传引用下去 |
+| 1 | Gleam 内层闭包参数不继承外层返回类型标注（`fn(x: A) -> fn(B) -> C` 中内层 `x` 类型未知） | 给内层闭包参数显式标注类型 |
+| 1 | `_` 前缀绑定名只能当丢弃 pattern，不能在表达式位置引用 | 需要引用的绑定用正常名字 |
+| 1 | 测试进程结束后残留 client actor 打印触发 `device has terminated` crash report | 无害噪音；actor 应在测试结束前显式停掉（低优先级） |
