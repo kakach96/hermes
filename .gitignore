@@ -22,11 +22,16 @@ Thumbs.db
 .vscode/
 !.vscode/extensions.json
 
-# ---------- 环境与密钥（Phase 5 起务必保持）----------
+# ---------- 环境与密钥（M6 起务必保持）----------
 .env
 .env.*
 *.pem
 *.key
+
+# ---------- 运行数据 ----------
+infra/natsdata/
+infra/boot*.log
+data/
 
 # ---------- ProVerif 输出 ----------
 *.pv.out

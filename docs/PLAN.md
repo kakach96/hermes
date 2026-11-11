@@ -20,12 +20,34 @@
 | 多端同步 | 收件箱模型 + 每设备游标 | 按设备拉取，天然支持离线补投，参考 Telegram |
 | 大房间 fanout | 树状分发 | 线性 fanout O(N) 会打爆单进程邮箱，参考 Discord Manifold |
 | 消息总线 | NATS JetStream | 比 Kafka 轻量一个数量级，比 RabbitMQ 的流能力更贴 IM 离线补投 |
-| 存储 | RocksDB 时序 KV + UUIDv7 | UUIDv7 单调可排序，游标拉取无需索引；LSM 适合写多读少 |
+| 存储引擎 | fjall（纯 Rust LSM sidecar，经 Erlang port 接入） | v1 决策：替代 RocksDB——纯 Rust 免 NIF 编译（cmake/MSVC/rebar3 地狱），API 形态同为 LSM KV；RocksDB 路线保留在 ADR 档案里 |
+| 桌面壳 | Tauri 直接依赖 core（v0 无 UniFFI） | src-tauri 是 Rust，path 依赖 hermes-core 即可；UniFFI 待 iOS/Android 出现时再引入 |
 | E2E 加密 | libsignal（官方 Rust 库） | 禁止自研加密协议；ProVerif 形式化验证放 Phase 6 |
 | 客户端 | Rust 核心 + UniFFI | 一套核心逻辑喂 SwiftUI / Compose，视图层纯声明式 |
 | retained | 仅在线状态 | 聊天记录走存储层，不塞 retained，参考 MQTT 最佳实践 |
 
-## 路线图
+## 冲刺模式（2026-11-11 策略变更）
+
+> 原策略：严格按 Phase 串行，每个模块打磨完再进下一个。
+> 新策略：**所有模块先各做一个 v0 版本，端到端跑通再回头加深。**
+
+v0 端到端验收目标：两个 Tauri 客户端经 WebSocket 连 server，房间互聊，
+消息落 NATS JetStream 持久化，fjall 存历史，离线重连按设备游标补投，
+core 内置 libsignal 会话（加密里程碑见 M6）。
+
+| 里程碑 | 内容 | 状态 |
+| --- | --- | --- |
+| M1 | 目录迁移 monorepo（server/infra/proto/core/storage/clients/tools） | ✅ 已迁入 server/，冒烟通过 |
+| M2 | infra：nats-server 单二进制 + 配置，JetStream 就绪 | ✅ v2.15.3，文件存储已验证 |
+| M3 | server：最小 NATS 客户端（FFI）+ 会话 Actor + JetStream 离线补投 | ⬜ |
+| M4 | storage：fjall sidecar（Erlang port 行协议）+ server store 驱动 | ⬜ |
+| M5 | core + Tauri：WS 连接、游标补投、Bloom 幂等、双实例聊天 | ⬜ |
+| M6 | crypto：libsignal 会话建立 + 端到端密文 | ⬜ |
+
+v0 明确**不做**（留给第二轮）：树状 fanout、QUIC、UniFFI、iOS/Android 视图、
+ProVerif、RocksDB。任何文档冲突以本表为准。
+
+### 原路线图（存档，仍按模块为第二轮的深化顺序）
 
 ### Phase 1：Gleam Actor 聊天室 ✅（已通过本机验证：gleam 1.19.2 / OTP 29.1.2）
 

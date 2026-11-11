@@ -28,18 +28,24 @@
 
 要点：
 - 目标是 monorepo：`server/`（Gleam 接入层）、`core/`（Rust 核心）、
-  `clients/`（iOS/Android/desktop 视图层）、`proto/`（协议契约）、`infra/`、`tools/`。
-- Phase 1 代码暂平铺在仓库根 `src/`，**Phase 2 开工第 0 步**按
-  `docs/STRUCTURE.md` 第六节迁移到 `server/`。
+  `storage/`（fjall 存储 sidecar，Erlang port 驱动）、`clients/desktop/`（Tauri）、
+  `proto/`（协议契约）、`infra/`（nats-server 单二进制 + 配置）、`tools/`。
+- Phase 1 代码已迁入 `server/`（STRUCTURE.md 第六节）。
 - 硬边界：server 与 core 永不发生代码依赖（只在 proto 契约会师）；
-  客户端业务逻辑只存在于 core，视图层零逻辑。
+  客户端业务逻辑只存在于 core，视图层零逻辑；
+  server 与 storage 只走 Erlang port 的 stdio 行协议。
+- 策略：冲刺模式——所有模块先做 v0 端到端跑通，里程碑 M1~M6 见 `docs/PLAN.md`。
 
 ## 常用命令
 
 ```sh
-gleam run     # 运行主程序（Phase 1：在仓库根执行；迁移后改为 cd server && gleam run）
+# server（Gleam 接入层，Phase 1 已迁入 server/）
+cd server
+gleam run     # 有剧本的聊天室演示
 gleam test    # 行为测试（gleeunit）
-gleam format  # 格式化
+
+# NATS（infra 单二进制，版本锁 v2.15.3，从仓库根执行）
+infra\nats-server.exe -c infra\nats.conf
 ```
 
 依赖：Erlang/OTP 26+、Gleam 1.x（`gleam` 与 `erl` 在 PATH 中）。
