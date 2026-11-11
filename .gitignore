@@ -1,0 +1,33 @@
+# ---------- Gleam / Erlang ----------
+build/
+*.beam
+erl_crash.dump
+rebar3.crashdump
+.rebar3/
+
+# ---------- Rust（core / desktop/src-tauri）----------
+target/
+**/*.rs.bk
+
+# ---------- Tauri / 前端 ----------
+node_modules/
+dist/
+.vite/
+
+# ---------- 平台与编辑器 ----------
+.DS_Store
+Thumbs.db
+.idea/
+*.iml
+.vscode/
+!.vscode/extensions.json
+
+# ---------- 环境与密钥（Phase 5 起务必保持）----------
+.env
+.env.*
+*.pem
+*.key
+
+# ---------- ProVerif 输出 ----------
+*.pv.out
+attack*.trace
