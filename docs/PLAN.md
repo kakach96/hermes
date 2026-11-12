@@ -41,7 +41,7 @@ core 内置 libsignal 会话（加密里程碑见 M6）。
 | M2 | infra：nats-server 单二进制 + 配置，JetStream 就绪 | ✅ v2.15.3，文件存储已验证 |
 | M3 | server：最小 NATS 客户端（FFI）+ 会话 Actor + JetStream 离线补投 | ✅ 含 WS 会话，e2e 全绿（含跨重启历史重放） |
 | M4 | storage：fjall sidecar（Erlang port 行协议）+ server store 驱动 | ✅ 游标/成员名单持久化，sidecar 崩溃重启数据仍在，10 测试全绿 |
-| M5 | core + Tauri：WS 连接、游标补投、Bloom 幂等、双实例聊天 | 🔶 core（4 测试绿）+ Tauri 壳编译通过，GUI 已启动验证中 |
+| M5 | core + Tauri：WS 连接、游标补投、Bloom 幂等、双实例聊天 | ✅ GUI 单实例全链路实测通过（入房/补投/发送），node e2e 覆盖双实例 |
 | M6 | crypto：libsignal 会话建立 + 端到端密文 | ⬜ |
 
 v0 明确**不做**（留给第二轮）：树状 fanout、QUIC、UniFFI、iOS/Android 视图、
@@ -123,3 +123,4 @@ ProVerif、RocksDB。任何文档冲突以本表为准。
 | M5 | `tauri-build` 在 Windows 必须有 `icons/icon.ico`（bundle.active=false 也逃不掉，它是资源编译不是打包） | `tools/gen_icon.py` 纯 struct 手写 ICO（BMP 路径，BGR 字节序、高度翻倍、自底向上） |
 | M5 | Tauri 异步命令里 `tokio::spawn` 可用（tauri 自带 tokio runtime），但 src-tauri 需显式依赖 tokio（sync feature 足够） | 显式加依赖 |
 | M5 | 去重过滤器只在**收到**时登记 dedup_id；发送时登记会把自己的消息当重复丢掉 | transport.rs 注释 |
+| M5 | Tauri v2 权限系统：前端 `event.listen` 需要能力声明，没有 capabilities 文件时默认拒绝（且报错对象没有 message，界面只会显示 "undefined"） | 写 `src-tauri/capabilities/default.json` 授 `core:default`；错误显示一律 `String(e)` 全字串化 |

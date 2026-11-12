@@ -8,6 +8,7 @@ const $ = (id) => document.getElementById(id);
 const log = $("log");
 let lastSeq = 0;
 let connected = false;
+let myName = "";
 
 // ---------- 渲染 ----------
 
@@ -48,43 +49,75 @@ function escape(s) {
 // ---------- 事件桥 ----------
 
 async function startListen() {
-  await listen("hermes", ({ payload: ev }) => {
-    switch (ev.type) {
-      case "joined":
-        addLine("notice", `已进入房间 · ${ev.members.length} 人在线`);
-        connected = true;
-        $("input").disabled = false;
-        $("send").disabled = false;
-        break;
-      case "chat":
-        addRow(ev.from, ev.text, ev.from === myName);
-        if (ev.seq > lastSeq) lastSeq = ev.seq;
-        break;
-      case "notice":
-        addLine("notice", ev.text);
-        break;
-      case "error":
-        addLine("err", ev.reason);
-        break;
-      case "disconnected":
-        connected = false;
-        $("input").disabled = true;
-        $("send").disabled = true;
-        addLine("err", "连接断开 —— 消息已按游标记住，重新进入即可补上");
-        setTimeout(() => {
-          $("chat").classList.add("hidden");
-          $("join").classList.remove("hidden");
-          $("name").value = myName;
-          $("name").focus();
-        }, 1200);
-        break;
-    }
-  });
+  try {
+    await listen("hermes", ({ payload: ev }) => {
+      // 诊断：标题栏显示最后收到的事件类型（桥活了没一眼可见）
+      document.title = `hermes · ${ev.type}`;
+      try {
+        handle(ev);
+      } catch (e) {
+        addLine("err", "渲染错误: " + e.message);
+      }
+    });
+  } catch (e) {
+    showFatal("事件桥注册失败: " + (e?.message ?? String(e)));
+  }
 }
 
-// ---------- 交互 ----------
+function handle(ev) {
+  switch (ev.type) {
+    case "joined":
+      addLine("notice", `已进入房间 · ${(ev.members || []).length} 人在线`);
+      connected = true;
+      $("input").disabled = false;
+      $("send").disabled = false;
+      $("input").focus();
+      break;
+    case "chat":
+      addRow(ev.from, ev.text, ev.from === myName);
+      if (ev.seq > lastSeq) lastSeq = ev.seq;
+      break;
+    case "notice":
+      addLine("notice", ev.text);
+      break;
+    case "error":
+      addLine("err", ev.reason);
+      break;
+    case "disconnected":
+      connected = false;
+      $("input").disabled = true;
+      $("send").disabled = true;
+      addLine("err", "连接断开 —— 消息已按游标记住，重新进入即可补上");
+      setTimeout(() => {
+        $("chat").classList.add("hidden");
+        $("join").classList.remove("hidden");
+        $("name").value = myName;
+        $("name").focus();
+      }, 1200);
+      break;
+    default:
+      addLine("err", "未知事件: " + JSON.stringify(ev));
+  }
+}
 
-let myName = "";
+function showFatal(msg) {
+  $("join-error").textContent = msg;
+  const line = document.createElement("div");
+  line.className = "err";
+  line.textContent = msg;
+  document.body.appendChild(line);
+}
+
+// JS 侧任何未捕获错误都要可见，不许静默
+window.addEventListener("unhandledrejection", (e) => {
+  const r = e.reason;
+  showFatal("错误: " + (r?.message ?? String(r)));
+});
+window.addEventListener("error", (e) => {
+  showFatal("错误: " + (e.message ?? String(e)));
+});
+
+// ---------- 交互 ----------
 
 $("connect").onclick = async () => {
   const url = $("url").value.trim();
@@ -103,7 +136,12 @@ $("connect").onclick = async () => {
     $("join").classList.add("hidden");
     $("chat").classList.remove("hidden");
     $("me").textContent = name;
-    $("input").focus();
+    // 3 秒内没等到 joined = 桥有问题，明确说出来而不是干等
+    setTimeout(() => {
+      if (!connected) {
+        addLine("err", "3 秒未收到入房回执 —— 检查 server 是否在跑");
+      }
+    }, 3000);
   } catch (e) {
     $("join-error").textContent = String(e).replace(/^"|"$/g, "");
   } finally {
