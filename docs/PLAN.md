@@ -125,3 +125,4 @@ ProVerif、RocksDB。任何文档冲突以本表为准。
 | M5 | 去重过滤器只在**收到**时登记 dedup_id；发送时登记会把自己的消息当重复丢掉 | transport.rs 注释 |
 | M5 | Tauri v2 权限系统：前端 `event.listen` 需要能力声明，没有 capabilities 文件时默认拒绝（且报错对象没有 message，界面只会显示 "undefined"） | 写 `src-tauri/capabilities/default.json` 授 `core:default`；错误显示一律 `String(e)` 全字串化 |
 | M5 | 【全局】`erlang:unique_integer` 是 per-VM 计数器：任何跨 VM 的唯一性场景（NATS subject、测试数据目录）都会撞号。实际撞了三次：consumer inbox 跨 VM 串消息（服务器实例间也会！）、request-reply 回执串线、测试数据目录跨运行残留 | 唯一性一律用 `unique_inbox`：每调用 48bit crypto 随机 + unique_integer 兜底；这条规则进 AGENTS 备忘 |
+| M5 | 双端多开不能用两个 `tauri dev`：第二个 dev 要覆盖 `target\debug\*.exe`，而第一个实例锁着该文件（os error 5） | release 构建一次后直接多开 exe；README 已写明 |

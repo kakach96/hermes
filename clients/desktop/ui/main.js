@@ -10,6 +10,29 @@ let lastSeq = 0;
 let connected = false;
 let myName = "";
 
+// ---------- 主题 ----------
+
+// 默认跟随系统；点 ☀/☾ 手动切换并记住（窗口标题栏一起切）
+async function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  localStorage.setItem("hermes-theme", theme);
+  $("theme").textContent = theme === "light" ? "☾" : "☀";
+  try {
+    await window.__TAURI__.window.getCurrentWindow().setTheme(theme);
+  } catch {
+    // 权限缺失时只切页面不切标题栏，可接受
+  }
+}
+
+applyTheme(
+  localStorage.getItem("hermes-theme") ??
+    (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark"),
+);
+
+$("theme").onclick = () => {
+  applyTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light");
+};
+
 // ---------- 渲染 ----------
 
 function now() {

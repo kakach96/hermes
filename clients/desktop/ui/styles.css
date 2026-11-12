@@ -1,4 +1,5 @@
-/* hermes —— 极简暗色。一个强调色，两层级灰，细边框，其余交给留白。 */
+/* hermes —— 极简双色。一个强调色，两层级灰，细边框，其余交给留白。
+   主题经 CSS 变量切换：默认暗色，:root[data-theme="light"] 覆盖为暖纸白。 */
 
 :root {
   --bg: #0b0b0d;
@@ -7,9 +8,22 @@
   --text: #e7e7ea;
   --muted: #7f7f89;
   --faint: #4a4a52;
-  --accent: #d9a25f;
-  --accent-dim: rgba(217, 162, 95, 0.1);
+  --accent: #d9a25f;      /* 交互面（按钮、圆点） */
+  --accent-ink: #d9a25f;  /* 文字上的强调色（昵称等） */
+  --err: #d47a7a;
   --mono: ui-monospace, "Cascadia Mono", "JetBrains Mono", Consolas, monospace;
+}
+
+:root[data-theme="light"] {
+  --bg: #f6f5f1;
+  --panel: #ffffff;
+  --border: #e5e2da;
+  --text: #202024;
+  --muted: #6e6e78;
+  --faint: #a8a8b0;
+  --accent: #d9a25f;
+  --accent-ink: #a0671f;
+  --err: #b8503f;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -102,7 +116,7 @@ body {
 
 .join-error {
   font-size: 12px;
-  color: #d47a7a;
+  color: var(--err);
   min-height: 16px;
 }
 
@@ -165,6 +179,26 @@ header {
 #log::-webkit-scrollbar { width: 8px; }
 #log::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 
+/* 主题切换（两种视图都要能用） */
+.theme-toggle {
+  position: fixed;
+  top: 12px;
+  right: 14px;
+  z-index: 10;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  width: 30px;
+  height: 26px;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.theme-toggle:hover { color: var(--accent-ink); border-color: var(--accent-ink); }
+
 .row { margin: 0 0 16px; }
 
 .row .meta {
@@ -177,7 +211,7 @@ header {
   margin-bottom: 3px;
 }
 
-.row .meta .who { color: var(--accent); }
+.row .meta .who { color: var(--accent-ink); }
 
 .row .body {
   font-size: 15px;
@@ -198,7 +232,7 @@ header {
 .err {
   text-align: center;
   font-size: 12px;
-  color: #d47a7a;
+  color: var(--err);
   margin: 10px 0;
 }
 
@@ -232,4 +266,4 @@ footer {
   transition: color 0.15s;
 }
 
-#input:focus ~ .send, .send:hover { color: var(--accent); }
+#input:focus ~ .send, .send:hover { color: var(--accent-ink); }

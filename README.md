@@ -38,8 +38,16 @@ cd server && gleam run        # ws://127.0.0.1:8080/ws
 # 3. 起两个终端端到端冒烟（裸 WS 客户端）
 node tools\e2e_ws.mjs
 
-# 4. Tauri 客户端 ×2（M5 完成后）
-cd clients\desktop && npm i && npm run tauri dev
+# 4. Tauri 客户端 ×2
+#    构建一次 release（首次约几分钟），之后直接多开 exe：
+cd clients\desktop
+npm run tauri build -- --no-bundle
+start src-tauri\target\release\hermes-desktop.exe
+start src-tauri\target\release\hermes-desktop.exe
+
+#    ⚠ 双端不要用两个 `npm run tauri dev`：dev 会重新编译并覆盖
+#    target\debug\hermes-desktop.exe，而第一个实例正锁着这个文件
+#    （Windows os error 5 拒绝访问）。dev 只用于开发单实例。
 ```
 
 ## 文档
