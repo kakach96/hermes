@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>hermes</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- 入房卡片 -->
+  <div id="join" class="overlay">
+    <div class="card">
+      <div class="wordmark">hermes<span class="dot"></span></div>
+      <div class="card-sub">beamed messages, no noise</div>
+      <input id="url" class="field" spellcheck="false" value="ws://127.0.0.1:8080/ws" />
+      <input id="name" class="field" spellcheck="false" placeholder="你的名字" autofocus />
+      <button id="connect" class="btn">进入房间</button>
+      <div id="join-error" class="join-error"></div>
+    </div>
+  </div>
+
+  <!-- 会话视图 -->
+  <div id="chat" class="chat hidden">
+    <header>
+      <span class="mark">hermes</span>
+      <span id="presence-dot" class="pulse"></span>
+      <span id="room-tag" class="tag">lobby</span>
+      <span class="spacer"></span>
+      <span id="me" class="me"></span>
+    </header>
+
+    <main id="log"></main>
+
+    <footer>
+      <input id="input" spellcheck="false" placeholder="说点什么…" disabled />
+      <button id="send" class="send" disabled>↩</button>
+    </footer>
+  </div>
+
+  <script src="main.js"></script>
+</body>
+</html>

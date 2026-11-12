@@ -1,0 +1,235 @@
+/* hermes —— 极简暗色。一个强调色，两层级灰，细边框，其余交给留白。 */
+
+:root {
+  --bg: #0b0b0d;
+  --panel: #101013;
+  --border: #1d1d22;
+  --text: #e7e7ea;
+  --muted: #7f7f89;
+  --faint: #4a4a52;
+  --accent: #d9a25f;
+  --accent-dim: rgba(217, 162, 95, 0.1);
+  --mono: ui-monospace, "Cascadia Mono", "JetBrains Mono", Consolas, monospace;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body { height: 100%; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.6 system-ui, "Segoe UI", sans-serif;
+  overflow: hidden;
+  user-select: none;
+}
+
+.hidden { display: none !important; }
+
+/* ---------- 入房卡片 ---------- */
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+}
+
+.card {
+  width: 320px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 36px 32px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.wordmark {
+  font-family: var(--mono);
+  font-size: 22px;
+  letter-spacing: 0.04em;
+  color: var(--text);
+}
+
+.wordmark .dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-left: 6px;
+  vertical-align: 4px;
+}
+
+.card-sub {
+  font-size: 12px;
+  color: var(--muted);
+  margin: -8px 0 8px;
+  letter-spacing: 0.02em;
+}
+
+.field {
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  padding: 9px 2px;
+  color: var(--text);
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.field:focus { border-bottom-color: var(--accent); }
+.field::placeholder { color: var(--faint); }
+
+.btn {
+  margin-top: 10px;
+  background: var(--accent);
+  color: #17130d;
+  border: none;
+  border-radius: 6px;
+  padding: 10px 0;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter 0.15s;
+}
+
+.btn:hover { filter: brightness(1.08); }
+.btn:active { filter: brightness(0.94); }
+
+.join-error {
+  font-size: 12px;
+  color: #d47a7a;
+  min-height: 16px;
+}
+
+/* ---------- 会话 ---------- */
+
+.chat {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.mark {
+  font-family: var(--mono);
+  font-size: 13px;
+  letter-spacing: 0.05em;
+}
+
+.pulse {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.tag {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 8px;
+}
+
+.spacer { flex: 1; }
+
+.me {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* 消息流：日志风，不做气泡 */
+
+#log {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px 24px 12px;
+  user-select: text;
+}
+
+#log::-webkit-scrollbar { width: 8px; }
+#log::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+.row { margin: 0 0 16px; }
+
+.row .meta {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 3px;
+}
+
+.row .meta .who { color: var(--accent); }
+
+.row .body {
+  font-size: 15px;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.row.self .meta .who { color: var(--muted); }
+
+.notice {
+  text-align: center;
+  font-size: 12px;
+  color: var(--faint);
+  margin: 10px 0 18px;
+}
+
+.err {
+  text-align: center;
+  font-size: 12px;
+  color: #d47a7a;
+  margin: 10px 0;
+}
+
+/* ---------- 输入区 ---------- */
+
+footer {
+  display: flex;
+  gap: 10px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+}
+
+#input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font-size: 15px;
+}
+
+#input::placeholder { color: var(--faint); }
+
+.send {
+  background: transparent;
+  border: none;
+  color: var(--faint);
+  font-size: 16px;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+#input:focus ~ .send, .send:hover { color: var(--accent); }

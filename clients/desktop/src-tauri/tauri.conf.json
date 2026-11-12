@@ -1,0 +1,30 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "hermes",
+  "version": "0.1.0",
+  "identifier": "app.hermes.desktop",
+  "build": {
+    "frontendDist": "../ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "hermes",
+        "width": 920,
+        "height": 720,
+        "minWidth": 560,
+        "minHeight": 480,
+        "center": true,
+        "theme": "Dark"
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": false,
+    "icon": []
+  }
+}
