@@ -7,7 +7,12 @@
 ////    消息回执 $JS.ACK 里的 stream seq 就是设备游标的真身
 //// 4. presence 走非持久 core 订阅（不进流，重放时不会收到陈旧通知）
 ////
-//// 内部模块：main 与 room/session 只通过 Subject(BusMsg) 交互。
+//// 路由模型（关键）：
+//// - 聊天：每会话独立 inbox subject，路由键 = inbox，天然一对一
+//// - presence：同一 subject 全局只挂**一个** NATS 订阅，bus 内部按注册名单
+////   扇出。若每会话各挂一个 sub，NATS 会对每次发布投递 N 份副本，而
+////   字典按 subject 键会互相覆盖 —— 这正是"自己收到两遍加入通知"的坑。
+//// - 会话凭 attach 回执的 token 退订，token 是唯一的。
 
 import gleam/bit_array
 import gleam/dict.{type Dict}
@@ -15,6 +20,7 @@ import gleam/erlang/process.{type Name, type Subject}
 import gleam/int
 import gleam/io
 import gleam/json.{type Json}
+import gleam/list
 import gleam/otp/actor
 import gleam/otp/supervision
 import gleam/string
@@ -35,40 +41,45 @@ pub type BusMsg {
   /// 发布信封到指定 subject（房间 Actor 用）
   Publish(subject: String, envelope: Envelope)
   /// 为会话建 JetStream consumer：按 room 过滤，from_seq <= 0 表示从头。
-  /// 成功回执 consumer 的 inbox subject（会话退房时凭它 Detach）。
+  /// 成功回执退订用的 token。
   Attach(
     room: String,
     from_seq: Int,
     deliver: Subject(Delivered),
     reply_to: Subject(Result(String, String)),
   )
-  /// 为会话建 presence 订阅（非持久）
+  /// 为会话登记 presence 扇出（非持久）。subject 为完整 presence subject。
   AttachPresence(
-    room: String,
+    subject: String,
     deliver: Subject(Delivered),
     reply_to: Subject(Result(String, String)),
   )
-  /// 会话退房：UNSUB inbox，ephemeral consumer 随之自动删除
-  Detach(subject: String)
+  /// 退订：token 是 attach 回执的那个
+  Detach(token: String)
   /// NATS 连接死亡（内部）
   ConnDown
 }
 
-type Kind {
-  /// JetStream 消费者投递（inbox subject）
-  Jetstream
-  /// 非持久 core 订阅（presence）
-  Core
+/// 聊天路由：一个会话 = 一个 inbox = 一条 NATS 订阅
+type JsRoute {
+  JsRoute(sid: Int, deliver: Subject(Delivered))
 }
 
-type Entry {
-  Entry(sid: Int, deliver: Subject(Delivered), kind: Kind)
+/// presence 路由：一个 subject = 一条 NATS 订阅 = 一份扇出名单
+type CoreRoute {
+  CoreRoute(sid: Int, members: List(#(String, Subject(Delivered))))
+}
+
+type Route {
+  Js(JsRoute)
+  Core(CoreRoute)
 }
 
 type State {
   State(
     conn: ffi.Conn,
-    routes: Dict(String, Entry),
+    routes: Dict(String, Route),
+    tokens: Dict(String, String),
     stream: String,
     room_prefix: String,
   )
@@ -109,6 +120,7 @@ pub fn start(
           actor.initialised(State(
             conn: conn,
             routes: dict.new(),
+            tokens: dict.new(),
             stream: stream,
             room_prefix: room_prefix,
           ))
@@ -136,14 +148,17 @@ fn handle(state: State, msg: BusMsg) -> actor.Next(State, BusMsg) {
 
     Route(inbox, _msg_subject, reply, payload) -> {
       case dict.get(state.routes, inbox) {
-        Ok(Entry(_, deliver, Jetstream)) ->
+        Ok(Js(route)) ->
           case parse_stream_seq(reply) {
-            Ok(seq) -> process.send(deliver, Delivered(seq, payload))
             // reply 为空 = 控制帧（CREATE 应答等），吞掉
+            Ok(seq) -> process.send(route.deliver, Delivered(seq, payload))
             Error(Nil) -> Nil
           }
-        Ok(Entry(_, deliver, Core)) ->
-          process.send(deliver, Delivered(0, payload))
+        Ok(Core(route)) ->
+          list.each(route.members, fn(member) {
+            let #(_token, deliver) = member
+            process.send(deliver, Delivered(0, payload))
+          })
         // 无人认领的消息（比如 Detach 与投递赛跑），丢弃
         Error(Nil) -> Nil
       }
@@ -171,16 +186,18 @@ fn handle(state: State, msg: BusMsg) -> actor.Next(State, BusMsg) {
             )
           {
             Ok(_consumer_info) -> {
+              let token = ffi.unique_inbox("_ATT.")
               let state =
                 State(
                   ..state,
                   routes: dict.insert(
                     state.routes,
                     inbox,
-                    Entry(sid, deliver, Jetstream),
+                    Js(JsRoute(sid, deliver)),
                   ),
+                  tokens: dict.insert(state.tokens, token, inbox),
                 )
-              process.send(reply_to, Ok(inbox))
+              process.send(reply_to, Ok(token))
               actor.continue(state)
             }
             Error(reason) -> {
@@ -193,35 +210,24 @@ fn handle(state: State, msg: BusMsg) -> actor.Next(State, BusMsg) {
       }
     }
 
-    AttachPresence(room, deliver, reply_to) -> {
-      let subject = "hermes.presence." <> room
-      case ffi.subscribe(state.conn, subject) {
-        Error(Nil) -> {
-          process.send(reply_to, Error("订阅 presence 失败"))
+    AttachPresence(subject, deliver, reply_to) -> {
+      let token = ffi.unique_inbox("_ATT.")
+      let existing = dict.get(state.routes, subject)
+      case attach_presence_route(state, subject, deliver, token, existing) {
+        Ok(state) -> {
+          process.send(reply_to, Ok(token))
           actor.continue(state)
         }
-        Ok(sid) -> {
-          let state =
-            State(
-              ..state,
-              routes: dict.insert(
-                state.routes,
-                subject,
-                Entry(sid, deliver, Core),
-              ),
-            )
-          process.send(reply_to, Ok(subject))
+        Error(reason) -> {
+          process.send(reply_to, Error(reason))
           actor.continue(state)
         }
       }
     }
 
-    Detach(subject) -> {
-      let state = case dict.get(state.routes, subject) {
-        Ok(entry) -> {
-          ffi.unsubscribe(state.conn, entry.sid)
-          State(..state, routes: dict.delete(state.routes, subject))
-        }
+    Detach(token) -> {
+      let state = case dict.get(state.tokens, token) {
+        Ok(key) -> detach_route(state, token, key)
         Error(Nil) -> state
       }
       actor.continue(state)
@@ -231,6 +237,93 @@ fn handle(state: State, msg: BusMsg) -> actor.Next(State, BusMsg) {
       io.println("(bus) NATS 连接断开，交还监督树重启")
       actor.stop_abnormal("nats connection lost")
     }
+  }
+}
+
+fn attach_presence_route(
+  state: State,
+  subject: String,
+  deliver: Subject(Delivered),
+  token: String,
+  existing: Result(Route, Nil),
+) -> Result(State, String) {
+  case existing {
+    // 已有订阅：只登记进扇出名单，绝不再挂 NATS 订阅
+    Ok(Core(route)) ->
+      Ok(
+        State(
+          ..state,
+          routes: dict.insert(
+            state.routes,
+            subject,
+            Core(CoreRoute(route.sid, [#(token, deliver), ..route.members])),
+          ),
+          tokens: dict.insert(state.tokens, token, subject),
+        ),
+      )
+    Ok(Js(_)) -> {
+      // 不该发生（subject 键冲突），保险起见记日志
+      io.println("(bus) presence subject 与聊天 inbox 撞键: " <> subject)
+      Ok(state)
+    }
+    Error(Nil) ->
+      case ffi.subscribe(state.conn, subject) {
+        Ok(sid) ->
+          Ok(
+            State(
+              ..state,
+              routes: dict.insert(
+                state.routes,
+                subject,
+                Core(CoreRoute(sid, [#(token, deliver)])),
+              ),
+              tokens: dict.insert(state.tokens, token, subject),
+            ),
+          )
+        Error(Nil) -> Error("订阅 presence 失败")
+      }
+  }
+}
+
+fn detach_route(state: State, token: String, key: String) -> State {
+  case dict.get(state.routes, key) {
+    Ok(Js(route)) -> {
+      ffi.unsubscribe(state.conn, route.sid)
+      State(
+        ..state,
+        routes: dict.delete(state.routes, key),
+        tokens: dict.delete(state.tokens, token),
+      )
+    }
+    Ok(Core(route)) -> {
+      let members =
+        list.filter(route.members, fn(member) {
+          let #(t, _) = member
+          t != token
+        })
+      case members {
+        // 最后一个会话退了，撤销 NATS 订阅
+        [] -> {
+          ffi.unsubscribe(state.conn, route.sid)
+          State(
+            ..state,
+            routes: dict.delete(state.routes, key),
+            tokens: dict.delete(state.tokens, token),
+          )
+        }
+        _ ->
+          State(
+            ..state,
+            routes: dict.insert(
+              state.routes,
+              key,
+              Core(CoreRoute(route.sid, members)),
+            ),
+            tokens: dict.delete(state.tokens, token),
+          )
+      }
+    }
+    Error(Nil) -> state
   }
 }
 
@@ -244,7 +337,7 @@ pub fn publish(
   process.send(bus, Publish(subject, envelope))
 }
 
-/// 建消费者并等待就绪。返回 inbox subject，退房时凭它 Detach。
+/// 建消费者并等待就绪。回执退订用的 token。
 /// from_seq 是**包含**起点：传"下一条要收的 stream seq"，
 /// 即设备游标（最后一条已收的 seq）+ 1；从零开始收全量传 0。
 pub fn attach(
@@ -258,14 +351,14 @@ pub fn attach(
 
 pub fn attach_presence(
   bus: Subject(BusMsg),
-  room: String,
+  subject: String,
   deliver: Subject(Delivered),
 ) -> Result(String, String) {
-  process.call(bus, 8000, AttachPresence(room, deliver, _))
+  process.call(bus, 8000, AttachPresence(subject, deliver, _))
 }
 
-pub fn detach(bus: Subject(BusMsg), subject: String) -> Nil {
-  process.send(bus, Detach(subject))
+pub fn detach(bus: Subject(BusMsg), token: String) -> Nil {
+  process.send(bus, Detach(token))
 }
 
 // ---------- JetStream 细节 ----------

@@ -102,7 +102,8 @@ pub fn presence_not_persisted_test() {
 
   let room = unique_suffix()
   let deliver = process.new_subject()
-  let assert Ok(_presence_subject) = bus.attach_presence(bus_sub, room, deliver)
+  let presence_subject = "hermes.presence." <> room
+  let assert Ok(_presence_subject) = bus.attach_presence(bus_sub, presence_subject, deliver)
 
   bus.publish(hall, "hermes.presence." <> room, envelope.Notice("上线"))
 
