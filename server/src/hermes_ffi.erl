@@ -221,6 +221,10 @@ request(Conn, Subject, Payload, Timeout) ->
     Conn ! {unsub, Sid},
     Result.
 
-%% 给 Gleam 用的唯一字符串（不烧原子表）
+%% 给 Gleam 用的唯一字符串（不烧原子表）。
+%% 注意：unique_integer 是 per-VM 计数器，两个 VM 各自从 1 开始数，
+%% 直接用它当 subject 会跨进程撞号（NATS 按 subject 投递，谁都能收到）。
+%% 所以每次调用混入 48bit 随机分量，同 VM 内再靠 unique_integer 兜底。
 unique_inbox(Prefix) ->
-    <<Prefix/binary, (integer_to_binary(erlang:unique_integer([positive])))/binary>>.
+    Rand = binary:encode_hex(crypto:strong_rand_bytes(6)),
+    <<Prefix/binary, Rand/binary, (integer_to_binary(erlang:unique_integer([positive])))/binary>>.

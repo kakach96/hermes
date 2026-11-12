@@ -75,3 +75,7 @@ infra\nats-server.exe -c infra\nats.conf
   名字应在程序入口创建一次。
 - 主动退房要 `demonitor_process`，否则会收到迟到的 `'DOWN'`，
   房间处理 `'DOWN'` 时需兜底吞掉未知 monitor 的通知。
+- **`erlang:unique_integer` 只是 per-VM 计数器，不是全局唯一**。
+  任何跨进程/跨 VM 的唯一性场景（NATS subject、持久化路径、文件名）
+  必须用 `hermes_ffi:unique_inbox`（crypto 随机 + 计数器兜底），
+  否则会撞号：症状是消息串线、测试数据残留、莫名 flaky。

@@ -8,6 +8,7 @@ import gleam/otp/actor
 import gleeunit
 import hermes/bus
 import hermes/envelope
+import hermes/ffi
 import hermes/room
 import hermes/store
 
@@ -15,15 +16,12 @@ pub fn main() {
   gleeunit.main()
 }
 
+// 数据目录必须用全局随机：erlang:unique_integer 是 per-VM 计数器，
+// 每次运行都从同样的数字开始 → 目录跨运行撞车，残留上一轮的 members
+// 数据会被房间恢复出来（血泪教训，见 PLAN 踩坑表）
 fn unique_id() -> String {
-  int_to_string(unique_ffi())
+  ffi.unique_inbox("")
 }
-
-@external(erlang, "erlang", "unique_integer")
-fn unique_ffi() -> Int
-
-@external(erlang, "erlang", "integer_to_binary")
-fn int_to_string(n: Int) -> String
 
 /// store.start 失败（多半是 exe 未构建）时跳过测试而不是报红
 fn try_start(
