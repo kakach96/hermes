@@ -40,7 +40,7 @@ core 内置 libsignal 会话（加密里程碑见 M6）。
 | M1 | 目录迁移 monorepo（server/infra/proto/core/storage/clients/tools） | ✅ 已迁入 server/，冒烟通过 |
 | M2 | infra：nats-server 单二进制 + 配置，JetStream 就绪 | ✅ v2.15.3，文件存储已验证 |
 | M3 | server：最小 NATS 客户端（FFI）+ 会话 Actor + JetStream 离线补投 | ✅ 含 WS 会话，e2e 全绿（含跨重启历史重放） |
-| M4 | storage：fjall sidecar（Erlang port 行协议）+ server store 驱动 | ⬜ |
+| M4 | storage：fjall sidecar（Erlang port 行协议）+ server store 驱动 | ✅ 游标/成员名单持久化，sidecar 崩溃重启数据仍在，10 测试全绿 |
 | M5 | core + Tauri：WS 连接、游标补投、Bloom 幂等、双实例聊天 | ⬜ |
 | M6 | crypto：libsignal 会话建立 + 端到端密文 | ⬜ |
 
@@ -116,3 +116,7 @@ ProVerif、RocksDB。任何文档冲突以本表为准。
 | M3 | `by_start_sequence` 的 `opt_start_seq` 是包含起点 | 游标契约定义为"下一条要收的 seq"，重放传 cursor+1 |
 | M3 | shell 里 Start-Process 拉起的 NATS 会在 shell 会话结束时被作业对象收割 | 用 WMI `Win32_Process Create` 真脱离父进程 |
 | M3 | presence 每会话各挂一个 NATS sub → 每次发布投递 N 份副本，路由字典按 subject 键互相覆盖，最后入房的会话收到 N 遍 | 同一 presence subject 全局只挂一个 sub，bus 内部按 token 名单扇出 |
+| M4 | fjall 2 的 `Keyspace::open` 收 `Config` 不是字符串路径 | `fjall::Keyspace::open(fjall::Config::new(dir))` |
+| M4 | Erlang port `{packet, 4}` 帧格式必须两侧严格对齐（大端 u32 长度 + 载荷） | Rust 侧手写 framing，天然对齐 |
+| M4 | port 的 owner 是打开它的进程；sidecar 崩溃 → exit 信号带走 owner → 监督树重启重建 port，fjall 落盘数据自动恢复 | 崩溃即恢复，测试覆盖 |
+| M4 | `catch` 在 OTP 29 已弃用 | 之后统一换 `try ... catch ... end`（低优先级警告） |

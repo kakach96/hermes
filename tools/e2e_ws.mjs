@@ -74,6 +74,12 @@ check("Alice 补投 e2", alice2.messages.some(
 check("Alice 不重投 e1", !alice2.messages.some(
   (m) => m.type === "chat" && m.dedup_id === "e1"));
 
+// 服务端代存游标：Alice 再重连但不带 cursor —— fjall 里存的上次游标
+// 应接管，既不从头重放也不丢消息
+const alice3 = await connect("Alice", 0);
+await sleep(700);
+check("服务端游标：不从头重放", !alice3.messages.some((m) => m.type === "chat"));
+
 bob.send(JSON.stringify({ type: "leave" }));
 bob.close();
 

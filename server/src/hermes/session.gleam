@@ -18,17 +18,19 @@ import gleam/http/request
 import gleam/http/response
 import gleam/int
 import gleam/json
-import gleam/option.{Some}
+import gleam/option
 import mist
 
 import hermes/bus
 import hermes/envelope
 import hermes/room
+import hermes/store
 
 pub type State {
   State(
     bus: Subject(bus.BusMsg),
     room: Subject(room.RoomMsg),
+    store: store.Store,
     room_subject: String,
     presence_subject: String,
     /// 入房身份；"" = 尚未入房
@@ -37,6 +39,8 @@ pub type State {
     chat_token: String,
     /// presence 扇出名单的退订 token
     presence_token: String,
+    /// 本设备的游标 key（cursor:<room>:<name>）
+    cursor_key: String,
     /// 已收到的最大 stream seq —— 设备游标的真身
     cursor: Int,
     /// 服务端→客户端投递通道（本进程拥有的 Subject）
@@ -55,6 +59,7 @@ pub fn upgrade(
   req: request.Request(mist.Connection),
   bus: Subject(bus.BusMsg),
   room: Subject(room.RoomMsg),
+  storage: store.Store,
   room_subject: String,
   presence_subject: String,
 ) -> response.Response(mist.ResponseData) {
@@ -66,18 +71,20 @@ pub fn upgrade(
         State(
           bus: bus,
           room: room,
+          store: storage,
           room_subject: room_subject,
           presence_subject: presence_subject,
           name: "",
           chat_token: "",
           presence_token: "",
+          cursor_key: "",
           cursor: 0,
           ws_subject: ws_subject,
         )
       let selector =
         process.new_selector()
         |> process.select(ws_subject)
-      #(state, Some(selector))
+      #(state, option.Some(selector))
     },
     handler: handle,
     on_close: close,
@@ -133,6 +140,23 @@ fn handle_text(state: State, text: String, conn: mist.WebsocketConnection) {
 }
 
 fn join(state: State, name: String, cursor: Int, conn) {
+  // 游标恢复：客户端报了 cursor 就用客户端的（设备真相在客户端），
+  // 没报（=0）就查服务端替它记住的那个
+  let cursor_key = "cursor:" <> state.room_subject <> ":" <> name
+  let start_cursor = case cursor > 0 {
+    True -> cursor
+    False ->
+      case store.get(state.store, cursor_key) {
+        Ok(option.Some(v)) ->
+          case int.parse(v) {
+            Ok(n) -> n
+            Error(Nil) -> 0
+          }
+        _ -> 0
+      }
+  }
+  let _ = store.put(state.store, cursor_key, int.to_string(start_cursor))
+
   // 顺序敏感：先挂 presence 订阅，再让房间广播加入通知 —— 自己也能收到
   case bus.attach_presence(state.bus, state.presence_subject, state.ws_subject) {
     Error(reason) -> {
@@ -141,7 +165,14 @@ fn join(state: State, name: String, cursor: Int, conn) {
     }
     Ok(presence_token) -> {
       let members = room.join(state.room, name)
-      case bus.attach(state.bus, state.room_subject, cursor + 1, state.ws_subject) {
+      case
+        bus.attach(
+          state.bus,
+          state.room_subject,
+          start_cursor + 1,
+          state.ws_subject,
+        )
+      {
         Error(reason) -> {
           bus.detach(state.bus, presence_token)
           room.leave(state.room, name)
@@ -150,14 +181,14 @@ fn join(state: State, name: String, cursor: Int, conn) {
         }
         Ok(chat_token) -> {
           let _ = mist.send_text_frame(conn, joined_json(members))
-          let _ = cursor
           mist.continue(
             State(
               ..state,
               name: name,
               chat_token: chat_token,
               presence_token: presence_token,
-              cursor: cursor,
+              cursor_key: cursor_key,
+              cursor: start_cursor,
             ),
           )
         }
@@ -201,6 +232,8 @@ fn deliver(state: State, seq: Int, payload: BitArray, conn) {
   case envelope.decode_payload(payload) {
     Ok(envelope.Chat(from, text, dedup_id)) -> {
       let _ = mist.send_text_frame(conn, chat_json(seq, from, text, dedup_id))
+      // 游标推进：高频低价值写入，fire-and-forget
+      store.put_async(state.store, state.cursor_key, int.to_string(seq))
       mist.continue(State(..state, cursor: int.max(state.cursor, seq)))
     }
     Ok(envelope.Notice(text)) -> {

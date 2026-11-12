@@ -23,16 +23,22 @@ core（Rust）= 客户端唯一逻辑所在；libsignal 加密在 core 内
 
 ## 运行
 
-需要：Erlang/OTP 29、Gleam 1.19（`D:\programs` 下，已入 PATH）、Rust (msvc)、Node。
+需要：Erlang/OTP 29、Gleam 1.19（`D:\programs` 下，已入 PATH）、Rust (msvc)、Node 24、rebar3。
 
 ```sh
+# 0. 构建 fjall 存储 sidecar（首次）
+cd storage && cargo build --release && cd ..
+
 # 1. 起 NATS（仓库根）
 infra\nats-server.exe -c infra\nats.conf
 
 # 2. 起服务器
-cd server && gleam run
+cd server && gleam run        # ws://127.0.0.1:8080/ws
 
-# 3. 起 Tauri 客户端 ×2（M5 完成后）
+# 3. 起两个终端端到端冒烟（裸 WS 客户端）
+node tools\e2e_ws.mjs
+
+# 4. Tauri 客户端 ×2（M5 完成后）
 cd clients\desktop && npm i && npm run tauri dev
 ```
 

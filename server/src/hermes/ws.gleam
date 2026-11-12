@@ -10,18 +10,20 @@ import mist
 import hermes/bus
 import hermes/room
 import hermes/session
+import hermes/store
 
 pub fn listener(
   port: Int,
   bus: Subject(bus.BusMsg),
   room: Subject(room.RoomMsg),
+  storage: store.Store,
   room_subject: String,
   presence_subject: String,
 ) -> mist.Builder(mist.Connection, mist.ResponseData) {
   let handler = fn(req: request.Request(mist.Connection)) {
     case request.path_segments(req) {
       ["ws"] ->
-        session.upgrade(req, bus, room, room_subject, presence_subject)
+        session.upgrade(req, bus, room, storage, room_subject, presence_subject)
       _ ->
         response.new(404)
         |> response.set_header("content-type", "text/plain")

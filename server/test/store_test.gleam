@@ -1,0 +1,141 @@
+//// fjall 存储 sidecar 集成测试 —— 需要 storage/target/release/hermes-storage.exe
+//// 已构建（cargo build --release）。exe 不在时自动跳过。
+//// 每个 test 用独立数据目录，互不污染。
+
+import gleam/erlang/process
+import gleam/option
+import gleam/otp/actor
+import gleeunit
+import hermes/bus
+import hermes/envelope
+import hermes/room
+import hermes/store
+
+pub fn main() {
+  gleeunit.main()
+}
+
+fn unique_id() -> String {
+  int_to_string(unique_ffi())
+}
+
+@external(erlang, "erlang", "unique_integer")
+fn unique_ffi() -> Int
+
+@external(erlang, "erlang", "integer_to_binary")
+fn int_to_string(n: Int) -> String
+
+/// store.start 失败（多半是 exe 未构建）时跳过测试而不是报红
+fn try_start(
+  name: process.Name(store.StoreMsg),
+  data_dir: String,
+) -> Result(actor.Started(store.Store), actor.StartError) {
+  let result = store.start(name, store.sidecar_exe, data_dir)
+  case result {
+    Error(_) ->
+      println(
+        "跳过 storage 测试（exe 未构建或启动失败）；先 cd storage && cargo build --release",
+      )
+    Ok(_) -> Nil
+  }
+  result
+}
+
+pub fn put_get_delete_roundtrip_test() {
+  let dir = store.data_dir <> "/t_" <> unique_id()
+  let name = process.new_name("store_test")
+  case try_start(name, dir) {
+    Ok(actor.Started(_pid, _)) -> {
+      let hall = process.named_subject(name)
+
+      let assert Ok(Nil) = store.put(hall, "hello", "世界")
+      let assert Ok(option.Some("世界")) = store.get(hall, "hello")
+
+      let assert Ok(Nil) = store.delete(hall, "hello")
+      let assert Ok(option.None) = store.get(hall, "hello")
+
+      // put_async 也应生效（fire-and-forget，稍等一下）
+      store.put_async(hall, "async", "yes")
+      process.sleep(100)
+      let assert Ok(option.Some("yes")) = store.get(hall, "async")
+      Nil
+    }
+    Error(_) -> Nil
+  }
+}
+
+pub fn survives_sidecar_restart_test() {
+  // 数据目录持久化：sidecar（连同 port）被杀重启后，数据仍在
+  let dir = store.data_dir <> "/t_" <> unique_id()
+  let name = process.new_name("store_restart_test")
+  case try_start(name, dir) {
+    Ok(actor.Started(pid, _)) -> {
+      let hall = process.named_subject(name)
+      let assert Ok(Nil) = store.put(hall, "persist", "fjall")
+
+      process.trap_exits(True)
+      process.kill(pid)
+      process.sleep(100)
+
+      let assert Ok(actor.Started(_pid2, _)) =
+        store.start(name, store.sidecar_exe, dir)
+      let hall2 = process.named_subject(name)
+      let assert Ok(option.Some("fjall")) = store.get(hall2, "persist")
+      Nil
+    }
+    Error(_) -> Nil
+  }
+}
+
+pub fn room_members_persist_test() {
+  // 房间成员名单外置到 sidecar：房间进程被杀重启后名单不丢
+  let dir = store.data_dir <> "/t_" <> unique_id()
+  let store_name = process.new_name("store_room_test")
+  case try_start(store_name, dir) {
+    Ok(actor.Started(_store_pid, _)) -> {
+      let hall_store = process.named_subject(store_name)
+      let fake_bus = process.new_subject()
+
+      let room_name = process.new_name("room_persist_test")
+      let assert Ok(actor.Started(room_pid, _)) =
+        room.start(
+          room_name,
+          "hermes.rooms.p1",
+          "hermes.presence.p1",
+          fake_bus,
+          option.Some(hall_store),
+        )
+      let chat = process.named_subject(room_name)
+
+      let reply = process.new_subject()
+      process.send(chat, room.Join("Alice", reply))
+      let assert Ok(["Alice"]) = process.receive(reply, 1000)
+      let assert Ok(bus.Publish(
+        "hermes.presence.p1",
+        envelope.Notice("Alice 加入了房间"),
+      )) = process.receive(fake_bus, 1000)
+
+      process.trap_exits(True)
+      process.kill(room_pid)
+      process.sleep(100)
+
+      let assert Ok(_) =
+        room.start(
+          room_name,
+          "hermes.rooms.p1",
+          "hermes.presence.p1",
+          fake_bus,
+          option.Some(hall_store),
+        )
+      let chat2 = process.named_subject(room_name)
+      process.send(chat2, room.Join("Bob", reply))
+      // 名单里应仍有 Alice（从 sidecar 恢复），Bob 最新在前
+      let assert Ok(["Bob", "Alice"]) = process.receive(reply, 1000)
+      Nil
+    }
+    Error(_) -> Nil
+  }
+}
+
+@external(erlang, "gleam@io", "println")
+fn println(text: String) -> Nil

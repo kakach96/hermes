@@ -32,6 +32,7 @@ Thumbs.db
 infra/natsdata/
 infra/boot*.log
 infra/server.log
+storage-data/
 data/
 
 # ---------- ProVerif 输出 ----------
