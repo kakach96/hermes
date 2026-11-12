@@ -39,7 +39,7 @@ core 内置 libsignal 会话（加密里程碑见 M6）。
 | --- | --- | --- |
 | M1 | 目录迁移 monorepo（server/infra/proto/core/storage/clients/tools） | ✅ 已迁入 server/，冒烟通过 |
 | M2 | infra：nats-server 单二进制 + 配置，JetStream 就绪 | ✅ v2.15.3，文件存储已验证 |
-| M3 | server：最小 NATS 客户端（FFI）+ 会话 Actor + JetStream 离线补投 | ⬜ |
+| M3 | server：最小 NATS 客户端（FFI）+ 会话 Actor + JetStream 离线补投 | 🔶 bus/游标/重放已通（7 测试全绿）；WS + session 进行中 |
 | M4 | storage：fjall sidecar（Erlang port 行协议）+ server store 驱动 | ⬜ |
 | M5 | core + Tauri：WS 连接、游标补投、Bloom 幂等、双实例聊天 | ⬜ |
 | M6 | crypto：libsignal 会话建立 + 端到端密文 | ⬜ |
@@ -109,3 +109,9 @@ ProVerif、RocksDB。任何文档冲突以本表为准。
 | 1 | Gleam 内层闭包参数不继承外层返回类型标注（`fn(x: A) -> fn(B) -> C` 中内层 `x` 类型未知） | 给内层闭包参数显式标注类型 |
 | 1 | `_` 前缀绑定名只能当丢弃 pattern，不能在表达式位置引用 | 需要引用的绑定用正常名字 |
 | 1 | 测试进程结束后残留 client actor 打印触发 `device has terminated` crash report | 无害噪音；actor 应在测试结束前显式停掉（低优先级） |
+| M3 | gen_tcp socket 的 controlling process 是调用方，spawn 的连接进程收不到 `{tcp,...}` | 建连后立即 `controlling_process` 交接；passive 建连 + `go` 握手消除 INFO 先到的竞态 |
+| M3 | NATS CONNECT 帧必须带 `CONNECT ` 前缀，裸 JSON = `-ERR Unknown Protocol Operation` 且连接悄悄死掉（无日志） | 协议帧逐字对齐；-ERR 视为致命快速失败 |
+| M3 | JetStream push consumer 投递的 MSG subject 是**消息原始 subject**（房间），不是 deliver_subject；路由必须按订阅 sid | FFI 按 sid 路由，OnMsg 传 (inbox, 原始 subject, reply, payload) |
+| M3 | NATS 2.15（API level 5，Strict）拒绝裸 ConsumerConfig：要包一层 `{stream_name, config}`；ephemeral consumer 默认闲置 5s 即删；`inactive_threshold` 要纳秒 int 不接受字符串 | 显式包层 + inactive_threshold 1800e9 ns；API 响应里的 error 字段必须检查（bus 曾把错误响应当成功） |
+| M3 | `by_start_sequence` 的 `opt_start_seq` 是包含起点 | 游标契约定义为"下一条要收的 seq"，重放传 cursor+1 |
+| M3 | shell 里 Start-Process 拉起的 NATS 会在 shell 会话结束时被作业对象收割 | 用 WMI `Win32_Process Create` 真脱离父进程 |

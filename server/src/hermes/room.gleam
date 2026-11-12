@@ -1,163 +1,115 @@
-//// 房间 Actor —— 赫尔墨斯 Phase 1 的核心。
+//// 房间 Actor —— v0 冲刺版。
 ////
-//// 三条设计原则，也是 BEAM 的常态：
-//// 1. 唯一可变状态是一份成员名单，外界只能用消息触碰它（状态内聚，天然无锁）；
-//// 2. 客户端进程挂掉时，房间靠 monitor 收到 Erlang 'DOWN'，广播通知其余成员；
-//// 3. 房间用进程名登记。崩溃被 supervisor 重启后，外界手里的通道依旧有效。
+//// 与 Phase 1 的关键区别：房间不再直接 fanout 给成员收件箱，
+//// 广播统一发往 NATS（聊天进 JetStream 流，presence 走非持久 core 订阅）。
+//// 状态只剩一份成员名单，用于 join 回执和 presence 文案。
+//// 未来大房间树状分发时，只需把这里换成 fanout.gleam，bus 接口不变。
 
-import gleam/erlang/process.{type Monitor, type Name, type Pid, type Subject}
+import gleam/erlang/process.{type Name, type Subject}
 import gleam/list
 import gleam/otp/actor
 import gleam/otp/supervision
 
-import hermes/client.{type ClientMsg}
+import hermes/bus
+import hermes/envelope
 
-/// 房间能理解的所有消息。这就是房间的全部对外 API。
 pub type RoomMsg {
-  /// 入房申请：名字、自己的 pid（供房间 monitor）、收件箱、回执通道。
-  /// Join 是同步 call，回执是当前成员名单（新成员在前）。
-  Join(
-    name: String,
-    pid: Pid,
-    inbox: Subject(ClientMsg),
-    reply_to: Subject(List(String)),
-  )
-  /// 一条要广播的聊天消息。广播的"协议"很朴素：改消息体而不是改收件人。
-  Msg(from: String, text: String)
+  /// 入房：同步 call，回执当前成员名单（新成员在前）
+  Join(name: String, reply_to: Subject(List(String)))
+  /// 聊天消息：发布到房间 subject，经 JetStream fanout 给所有会话
+  Msg(from: String, text: String, dedup_id: String)
   /// 主动退房
   Leave(name: String)
-  /// Erlang 'DOWN'：被 monitor 的客户端进程死了
-  MemberDown(down: process.Down)
 }
 
-/// 房间状态：一份成员名单。monitor 是死亡通知的凭据，退房时要凭它解除。
-type Member {
-  Member(name: String, pid: Pid, inbox: Subject(ClientMsg), monitor: Monitor)
+type State {
+  State(
+    members: List(String),
+    chat_subject: String,
+    presence_subject: String,
+    bus: Subject(bus.BusMsg),
+  )
 }
 
-/// 在程序入口创建一次的名字。房间重启后重新登记同一个名字，
-/// named_subject 对外界永远有效 —— 这是"监督树 + 命名进程"的经典搭配。
-/// 绝不要在循环里调用 new_name，它会烧 Erlang 原子表。
 pub fn supervised(
   name: Name(RoomMsg),
-) -> supervision.ChildSpecification(Subject(RoomMsg)) {
-  supervision.worker(fn() { start(name) })
+  chat_subject: String,
+  presence_subject: String,
+  bus: Subject(bus.BusMsg),
+) -> supervision.ChildSpecification(process.Subject(RoomMsg)) {
+  supervision.worker(fn() {
+    start(name, chat_subject, presence_subject, bus)
+  })
 }
 
-/// 启动房间。可直接调用（测试用），也可作为 supervisor 的 worker。
-pub fn start(name: Name(RoomMsg)) -> actor.StartResult(Subject(RoomMsg)) {
-  actor.new_with_initialiser(5000, fn(subject) {
-    // 房间要收两类消息：业务消息（走 subject）和客户端死亡通知（走 monitor）。
-    // 给了自定义 selector 之后，默认 subject 不会自动注册，必须手动加回来，
-    // 否则房间收不到任何聊天消息，只收得到 'DOWN'。
-    let selector =
-      process.new_selector()
-      |> process.select(subject)
-      |> process.select_monitors(fn(down) { MemberDown(down) })
-
-    let initialised =
-      actor.initialised([])
-      |> actor.selecting(selector)
-      |> actor.returning(subject)
-
-    Ok(initialised)
-  })
+pub fn start(
+  name: Name(RoomMsg),
+  chat_subject: String,
+  presence_subject: String,
+  bus: Subject(bus.BusMsg),
+) -> actor.StartResult(process.Subject(RoomMsg)) {
+  actor.new(State(
+    members: [],
+    chat_subject: chat_subject,
+    presence_subject: presence_subject,
+    bus: bus,
+  ))
   |> actor.named(name)
   |> actor.on_message(handle)
   |> actor.start
 }
 
-/// 消息处理：一次只处理一条，顺序执行 —— 这就是"每个 Actor 一个邮箱、
-/// 状态只在单进程里流转"的含义，不需要任何锁。
-fn handle(
-  members: List(Member),
-  msg: RoomMsg,
-) -> actor.Next(List(Member), RoomMsg) {
+fn handle(state: State, msg: RoomMsg) -> actor.Next(State, RoomMsg) {
   case msg {
-    Join(name, pid, inbox, reply_to) -> {
-      // monitor 必须由房间进程自己发起，'DOWN' 才会投进房间的信箱
-      let monitor = process.monitor(pid)
-      let members = [Member(name, pid, inbox, monitor), ..members]
-      // 广播放在登记之后，新成员也能听到自己的入房通知
-      broadcast(members, client.Notice(name <> " 加入了房间"))
-      process.send(reply_to, list.map(members, fn(member) { member.name }))
-      actor.continue(members)
+    Join(name, reply_to) -> {
+      let members = [name, ..state.members]
+      // presence 走非持久订阅，不进 JetStream（重放时不会收到陈旧通知）
+      bus.publish(state.bus, state.presence_subject, envelope.Notice(
+        name <> " 加入了房间",
+      ))
+      process.send(reply_to, members)
+      actor.continue(State(..state, members: members))
     }
 
-    Msg(from, text) -> {
-      broadcast(members, client.Chat(from, text))
-      actor.continue(members)
+    Msg(from, text, dedup_id) -> {
+      bus.publish(state.bus, state.chat_subject, envelope.Chat(
+        from,
+        text,
+        dedup_id,
+      ))
+      actor.continue(state)
     }
 
     Leave(name) -> {
-      case take_member(members, by_name(name)) {
-        Ok(#(member, rest)) -> {
-          // 主动退房要主动解除 monitor，否则稍后会收到一封迟到的 'DOWN'
-          process.demonitor_process(member.monitor)
-          broadcast(rest, client.Notice(name <> " 离开了房间"))
-          actor.continue(rest)
-        }
-        Error(Nil) -> actor.continue(members)
-      }
+      let members = list.filter(state.members, fn(m) { m != name })
+      bus.publish(state.bus, state.presence_subject, envelope.Notice(
+        name <> " 离开了房间",
+      ))
+      actor.continue(State(..state, members: members))
     }
-
-    MemberDown(down) -> {
-      case take_member(members, by_monitor(down.monitor)) {
-        Ok(#(member, rest)) -> {
-          broadcast(rest, client.Notice(member.name <> " 掉线了，被请出房间"))
-          actor.continue(rest)
-        }
-        // 已经退房的成员的迟到 'DOWN'，直接吞掉
-        Error(Nil) -> actor.continue(members)
-      }
-    }
-  }
-}
-
-// ---------- 内部工具 ----------
-
-fn broadcast(members: List(Member), what: ClientMsg) -> Nil {
-  list.each(members, fn(member) { process.send(member.inbox, what) })
-}
-
-fn by_name(name: String) -> fn(Member) -> Bool {
-  fn(member: Member) { member.name == name }
-}
-
-fn by_monitor(monitor: Monitor) -> fn(Member) -> Bool {
-  fn(member: Member) { member.monitor == monitor }
-}
-
-/// 从名单里摘出一个成员，返回它和剩下的名单。
-fn take_member(
-  members: List(Member),
-  matches: fn(Member) -> Bool,
-) -> Result(#(Member, List(Member)), Nil) {
-  case members {
-    [] -> Error(Nil)
-    [first, ..rest] ->
-      case matches(first) {
-        True -> Ok(#(first, rest))
-        False ->
-          case take_member(rest, matches) {
-            Ok(#(found, remainder)) -> Ok(#(found, [first, ..remainder]))
-            Error(Nil) -> Error(Nil)
-          }
-      }
   }
 }
 
 // ---------- 客户端 API ----------
 
-/// 同步入房：发起 call，等房间回执成员名单。1000ms 内没回执就崩溃调用方，
-/// call 语义就是这样：宁可崩溃重试，也不能拿着一个假的"已加入"继续跑。
 pub fn join(
-  hall: Subject(RoomMsg),
+  room: Subject(RoomMsg),
   name: String,
-  pid: Pid,
-  inbox: Subject(ClientMsg),
 ) -> List(String) {
-  process.call(hall, 1000, fn(reply: Subject(List(String))) {
-    Join(name, pid, inbox, reply)
+  process.call(room, 1000, fn(reply: Subject(List(String))) {
+    Join(name, reply)
   })
+}
+
+pub fn send_message(
+  room: Subject(RoomMsg),
+  from: String,
+  text: String,
+  dedup_id: String,
+) -> Nil {
+  process.send(room, Msg(from, text, dedup_id))
+}
+
+pub fn leave(room: Subject(RoomMsg), name: String) -> Nil {
+  process.send(room, Leave(name))
 }

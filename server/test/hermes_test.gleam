@@ -1,52 +1,73 @@
+//// 房间 Actor 的纯逻辑测试 —— 不依赖 NATS。
+////
+//// 技巧：房间只会 process.send 到总线 Subject，所以"假总线"就是
+//// 一个由测试进程自己拥有的 Subject，房间发来的 Publish 消息
+//// 直接落在测试进程的信箱里，用 receive 就能检查。
+
 import gleam/erlang/process
-import gleam/otp/actor
 import gleeunit
-import hermes/client
+import hermes/bus
+import hermes/envelope
 import hermes/room
 
 pub fn main() {
   gleeunit.main()
 }
 
-// Join 是同步 call，回执应是当前成员名单（新成员排最前）
-pub fn join_reports_members_test() {
-  let name = process.new_name("test_room")
-  let assert Ok(_) = room.start(name)
-  let hall = process.named_subject(name)
+pub fn join_and_presence_test() {
+  let fake_bus = process.new_subject()
+  let room_name = process.new_name("test_room")
+  let assert Ok(_) =
+    room.start(room_name, "hermes.rooms.t1", "hermes.presence.t1", fake_bus)
+  let hall = process.named_subject(room_name)
 
-  let assert Ok(actor.Started(alice_pid, alice_inbox)) = client.start("Alice")
-  let assert ["Alice"] = room.join(hall, "Alice", alice_pid, alice_inbox)
+  let reply = process.new_subject()
+  process.send(hall, room.Join("Alice", reply))
+  let assert Ok(["Alice"]) = process.receive(reply, 1000)
 
-  let assert Ok(actor.Started(bob_pid, bob_inbox)) = client.start("Bob")
-  let assert ["Bob", "Alice"] = room.join(hall, "Bob", bob_pid, bob_inbox)
+  // 房间应向 presence subject 发布加入通知
+  let assert Ok(
+    bus.Publish("hermes.presence.t1", envelope.Notice("Alice 加入了房间")),
+  ) = process.receive(fake_bus, 1000)
 }
 
-// 客户端进程被 kill 后，房间应通过 monitor 广播掉线通知
-pub fn dead_member_broadcasts_down_test() {
-  // 同 main：杀掉被 link 的客户端进程时，防止 exit 信号带走测试进程
-  process.trap_exits(True)
+pub fn msg_publishes_chat_envelope_test() {
+  let fake_bus = process.new_subject()
+  let room_name = process.new_name("test_room_msg")
+  let assert Ok(_) =
+    room.start(room_name, "hermes.rooms.t2", "hermes.presence.t2", fake_bus)
+  let hall = process.named_subject(room_name)
 
-  let name = process.new_name("test_room_down")
-  let assert Ok(_) = room.start(name)
-  let hall = process.named_subject(name)
+  room.send_message(hall, "Alice", "你好", "dedup-1")
 
-  let operator = process.new_subject()
-  room.join(hall, "Operator", process.self(), operator)
+  let assert Ok(bus.Publish(
+    "hermes.rooms.t2",
+    envelope.Chat("Alice", "你好", "dedup-1"),
+  )) = process.receive(fake_bus, 1000)
+}
 
-  let assert Ok(actor.Started(guest_pid, guest_inbox)) = client.start("Guest")
-  let assert ["Guest", "Operator"] = room.join(hall, "Guest", guest_pid, guest_inbox)
+pub fn leave_updates_members_test() {
+  let fake_bus = process.new_subject()
+  let room_name = process.new_name("test_room_leave")
+  let assert Ok(_) =
+    room.start(room_name, "hermes.rooms.t3", "hermes.presence.t3", fake_bus)
+  let hall = process.named_subject(room_name)
 
-  // Operator 自己的入房广播先到（入房通知广播给所有成员，包括新成员自己）
-  let assert Ok(client.Notice("Operator 加入了房间")) =
-    process.receive(operator, 2000)
+  let reply = process.new_subject()
+  process.send(hall, room.Join("Alice", reply))
+  let assert Ok(["Alice"]) = process.receive(reply, 1000)
+  let assert Ok(bus.Publish(
+    "hermes.presence.t3",
+    envelope.Notice("Alice 加入了房间"),
+  )) = process.receive(fake_bus, 1000)
 
-  // 入房通知先到
-  let assert Ok(client.Notice("Guest 加入了房间")) =
-    process.receive(operator, 2000)
+  process.send(hall, room.Leave("Alice"))
+  let assert Ok(bus.Publish(
+    "hermes.presence.t3",
+    envelope.Notice("Alice 离开了房间"),
+  )) = process.receive(fake_bus, 1000)
 
-  process.kill(guest_pid)
-
-  // 房间靠 monitor 感知死亡并广播
-  let assert Ok(client.Notice("Guest 掉线了，被请出房间")) =
-    process.receive(operator, 2000)
+  // Bob 入房时名单不应再包含已离开的 Alice
+  process.send(hall, room.Join("Bob", reply))
+  let assert Ok(["Bob"]) = process.receive(reply, 1000)
 }
