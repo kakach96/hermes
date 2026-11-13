@@ -35,6 +35,12 @@ infra/server.log
 storage-data/
 data/
 
+# vendored 依赖（libsignal shallow clone，见 core/Cargo.toml 注释与 README）
+/vendor/
+
+# Tauri 自动生成的 schema（build 时重生成）
+clients/desktop/src-tauri/gen/schemas/
+
 # ---------- ProVerif 输出 ----------
 *.pv.out
 attack*.trace

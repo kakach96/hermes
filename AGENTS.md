@@ -25,6 +25,7 @@
 ## 目录结构
 
 完整目录契约与依赖边界见 **`docs/STRUCTURE.md`**（单一事实来源）。
+各模块编码规范、提交纪律与红线见 **`docs/CONVENTIONS.md`**（提交前必读）。
 
 要点：
 - 目标是 monorepo：`server/`（Gleam 接入层）、`core/`（Rust 核心）、

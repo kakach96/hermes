@@ -21,5 +21,8 @@ rand = "0.9"
 # 用 shallow clone 放在仓库外，按需重新 vendor：
 #   git clone --depth 1 https://github.com/signalapp/libsignal <路径>
 # crates.io 同名 crate（0.1.0）是社区旧 C 绑定封装，勿用。
-libsignal-protocol = { path = "D:/programs/vendor/libsignal/rust/protocol" }
-libsignal-core = { path = "D:/programs/vendor/libsignal/rust/core" }
+# 官方 libsignal 以 shallow clone 方式 vendor 在仓库根 vendor/（不入库）：
+#   git clone --depth 1 https://github.com/signalapp/libsignal vendor/libsignal
+# crates.io 同名 crate（0.1.0）是老的 C 绑定封装，不能用。
+libsignal-protocol = { path = "../vendor/libsignal/rust/protocol" }
+libsignal-core = { path = "../vendor/libsignal/rust/core" }

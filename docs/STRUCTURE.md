@@ -21,11 +21,14 @@
 ```
 hermes/                             # 仓库根 = monorepo 根
 ├── AGENTS.md                       # 项目宪法：规则与索引，不放实现细节
-├── README.md                       # 快速上手
+├── README.md                       # 快速上手（中文）
+├── README.en.md                    # 快速上手（English，与 README.md 同步维护）
 ├── docs/
-│   ├── PLAN.md                     # 路线图 / Phase 状态 / 踩坑记录
+│   ├── PLAN.md                     # 路线图 / 里程碑状态 / 踩坑记录
 │   ├── STRUCTURE.md                # 本文档
-│   ├── ARCHITECTURE.md             # (Phase 2 起) 端到端消息流与加密流说明
+│   ├── CONVENTIONS.md              # 各模块编码规范、提交纪律、红线清单
+│   ├── ARCHITECTURE.md             # 端到端组件图、运行时数据流、加密流（中文）
+│   ├── ARCHITECTURE.en.md          # 同上（English），与中文版同步维护
 │   └── adr/                        # (按需) 0001-xxx.md，重大决策升级为独立 ADR
 │
 ├── proto/                          # [M5] 协议契约，唯一事实来源，无实现代码
@@ -96,7 +99,7 @@ hermes/                             # 仓库根 = monorepo 根
 clients/ios ──FFI──┐
 clients/android ─FFI┤
 clients/desktop ──path──► core ──WS/QUIC──► server ──► NATS JetStream
-                                                    └──► RocksDB
+                                                      └──► storage（fjall sidecar，Erlang port 驱动）
     proto/ ◄──── server 与 core 双方对齐（生成/手工映射）
 ```
 
