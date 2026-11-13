@@ -132,7 +132,8 @@ header {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 14px 20px;
+  /* 右侧留出固定定位的主题切换按钮的宽度，避免与用户名重叠 */
+  padding: 14px 56px 14px 20px;
   border-bottom: 1px solid var(--border);
   background: var(--panel);
 }
