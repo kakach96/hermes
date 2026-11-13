@@ -64,8 +64,11 @@ pub async fn connect(
         let mut cursor: u64 = 0;
         let mut seen = Bloom::new(1 << 20);
         let mut joined = false;
+        let mut me = String::new();
         let mut members: Vec<String> = Vec::new();
         let mut established: HashSet<String> = HashSet::new();
+        // 已发出 prekey_fetch、尚无结果的成员（防止重复刷请求）
+        let mut fetching: HashSet<String> = HashSet::new();
         // 懒建会话期间的待发队列：peer -> [(dedup_id, text)]
         let mut pending: HashMap<String, Vec<(String, String)>> = HashMap::new();
 
@@ -85,6 +88,7 @@ pub async fn connect(
                             let join_frame = ClientFrame::Join { name: name.clone(), cursor: c }.to_json();
                             joined = true;
                             cursor = c;
+                            me = name.clone();
                             // crypto 初始化：生成身份与 prekey 套件（带名字建地址）
                             let _ = crypto_tx.send(CryptoCmd::Init { name });
                             if sink.send(Message::text(join_frame)).await.is_err() {
@@ -96,7 +100,7 @@ pub async fn connect(
                             if !joined { continue; }
                             dispatch_outgoing(
                                 &text, &dedup_id, &members, &mut established,
-                                &mut pending, &crypto_tx, &mut sink,
+                                &mut fetching, &mut pending, &crypto_tx, &mut sink,
                             )
                             .await;
                         }
@@ -117,6 +121,7 @@ pub async fn connect(
                         }
                         CryptoEvent::Established { peer } => {
                             established.insert(peer.clone());
+                            fetching.remove(&peer);
                             // 冲掉懒建期间排队的明文
                             if let Some(queue) = pending.remove(&peer) {
                                 for (dedup_id, text) in queue {
@@ -175,9 +180,12 @@ pub async fn connect(
                         ServerFrame::Joined { members: list } => {
                             members = list.clone();
                             let _ = ev_tx.send(ClientEvent::Joined { members: list });
-                            // 对名单里每个成员懒建加密会话（含自己：自回显也要加密）
+                            // 对名单里其他成员懒建加密会话；自己不 fetch——
+                            // 自己的注册包此刻可能还没落账，必然撞空，留到首次发送时懒建
                             for peer in members.iter() {
-                                if !established.contains(peer) {
+                                if peer == &me { continue; }
+                                if !established.contains(peer) && !fetching.contains(peer) {
+                                    fetching.insert(peer.clone());
                                     let _ = sink.send(Message::text(
                                         ClientFrame::PrekeyFetch { for_name: peer.clone() }
                                             .to_json(),
@@ -186,10 +194,11 @@ pub async fn connect(
                             }
                         }
                         ServerFrame::PrekeyBundle { for_name, bundle } => {
+                            fetching.remove(&for_name);
                             if bundle.is_empty() {
-                                pending.remove(&for_name);
+                                // 保留待发队列：下次发送会重新 fetch（对方可能随后上线）
                                 let _ = ev_tx.send(ClientEvent::Notice {
-                                    text: format!("无法与 {for_name} 建立加密会话（对方不在线）"),
+                                    text: format!("暂无法与 {for_name} 建立加密会话（对方不在线），消息已暂存"),
                                 });
                             } else {
                                 let _ = crypto_tx.send(CryptoCmd::Establish {
@@ -211,9 +220,10 @@ pub async fn connect(
                             // 自己的消息也会被加密回声（自会话），统一解密路径
                             if seq > cursor { cursor = seq; }
                             let _ = crypto_tx.send(CryptoCmd::Decrypt {
-                                peer: from,
+                                peer: from.clone(),
                                 body_b64: body,
                             });
+                            let _ = from;
                         }
                         ServerFrame::Notice { text } => {
                             let _ = ev_tx.send(ClientEvent::Notice { text });
@@ -236,6 +246,7 @@ async fn dispatch_outgoing(
     dedup_id: &str,
     members: &[String],
     established: &mut HashSet<String>,
+    fetching: &mut HashSet<String>,
     pending: &mut HashMap<String, Vec<(String, String)>>,
     crypto_tx: &std_mpsc::Sender<CryptoCmd>,
     sink: &mut (impl SinkExt<Message> + Unpin),
@@ -251,8 +262,9 @@ async fn dispatch_outgoing(
         } else {
             let queue = pending.entry(peer.clone()).or_default();
             queue.push((dedup_id.to_string(), text.to_string()));
-            if queue.len() == 1 {
-                // 首次排队才发 fetch，避免重复请求
+            // 首次排队才发 fetch；fetch 已在途时不重复刷
+            if !fetching.contains(&peer) {
+                fetching.insert(peer.clone());
                 let frame = ClientFrame::PrekeyFetch { for_name: peer }.to_json();
                 let _ = sink.send(Message::text(frame)).await;
             }

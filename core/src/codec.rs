@@ -16,7 +16,11 @@ pub enum ServerFrame {
     Notice { text: String },
     Error { reason: String },
     /// prekey_fetch 的回执；bundle 为空 = 对方无登记（不在线）
-    PrekeyBundle { for_name: String, bundle: String },
+    PrekeyBundle {
+        #[serde(rename = "for")]
+        for_name: String,
+        bundle: String,
+    },
 }
 
 /// 客户端 → 服务端帧
@@ -28,8 +32,11 @@ pub enum ClientFrame {
     Leave,
     /// 登记 Signal 注册包（JSON 字符串，server 不透明存储）
     PrekeyRegister { bundle: String },
-    /// 取某人的注册包
-    PrekeyFetch { for_name: String },
+    /// 取某人的注册包（wire 字段名是 "for"，serde 需显式改名）
+    PrekeyFetch {
+        #[serde(rename = "for")]
+        for_name: String,
+    },
     /// 端到端密文（发给某成员）
     Enc { to: String, body: String, dedup_id: String },
 }
