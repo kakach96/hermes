@@ -5,7 +5,7 @@
 
 use std::sync::Mutex;
 
-use tauri::{Emitter, State};
+use tauri::{Emitter, Manager, State};
 use hermes_core::Handle;
 
 struct AppState(Mutex<Option<Handle>>);
@@ -24,7 +24,15 @@ async fn connect(
         old.leave();
     }
 
-    let (handle, mut events) = hermes_core::connect(&url).await?;
+    // 身份密钥持久化目录：同一名 = 同一身份，跨重启会话不失效
+    let keys_dir = app
+        .path()
+        .app_data_dir()
+        .map(|d| d.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| ".".into());
+    std::fs::create_dir_all(&keys_dir).ok();
+
+    let (handle, mut events) = hermes_core::connect(&url, &keys_dir).await?;
     handle.join(name.clone(), cursor);
     *state.0.lock().unwrap() = Some(handle);
 

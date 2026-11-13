@@ -88,7 +88,7 @@ struct Crypto {
 }
 
 /// 起 crypto 线程。channel 两端都是线程安全的。
-pub fn spawn() -> (CryptoCmdTx, CryptoEventRx) {
+pub fn spawn(keys_dir: String) -> (CryptoCmdTx, CryptoEventRx) {
     let (cmd_tx, cmd_rx) = std_mpsc::channel::<CryptoCmd>();
     let (ev_tx, ev_rx) = tokio::sync::mpsc::unbounded_channel::<CryptoEvent>();
     std::thread::Builder::new()
@@ -98,7 +98,7 @@ pub fn spawn() -> (CryptoCmdTx, CryptoEventRx) {
             while let Ok(cmd) = cmd_rx.recv() {
                 // Init 必须在 state 守卫之前处理：它就是用来创建 state 的
                 if let CryptoCmd::Init { name } = cmd {
-                    state = init(name, &ev_tx);
+                    state = init(name, &keys_dir, &ev_tx);
                     continue;
                 }
                 let Some(crypto) = state.as_mut() else {
@@ -158,66 +158,72 @@ fn device_id() -> Result<DeviceId, CryptoError> {
     DeviceId::new(1).map_err(|_| CryptoError("invalid device id".into()))
 }
 
-fn init(name: String, ev: &tokio::sync::mpsc::UnboundedSender<CryptoEvent>) -> Option<Crypto> {
+// Same name = same identity: load persisted key material when present,
+// otherwise generate and persist. Signal's real semantics: identity is
+// stable across restarts, so old sessions keep working after rejoin.
+// v0 stores keys as plain JSON (toy-grade); at-rest encryption is round 2.
+fn init(
+    name: String,
+    keys_dir: &str,
+    ev: &tokio::sync::mpsc::UnboundedSender<CryptoEvent>,
+) -> Option<Crypto> {
     let result: Option<Result<(InMemSignalProtocolStore, ProtocolAddress, String), CryptoError>> =
         (|| async {
-        let mut rng = fresh_rng();
-        let device = device_id()?;
-        let identity = IdentityKeyPair::generate(&mut rng);
-        // Signal 的 registration id 是个不透明的小整数
-        let registration_id = rng.random_range(1..0x3FFF);
+            let device = device_id()?;
+            let material = match load_key_material(&name, keys_dir) {
+                Some(m) => m,
+                None => {
+                    let m = generate_material()?;
+                    save_key_material(&name, keys_dir, &m)?;
+                    m
+                }
+            };
 
-        // 先签名（identity 还没被 store 吃掉）
-        let signed_key = KeyPair::generate(&mut rng);
-        let signed_sig =
-            identity.private_key().calculate_signature(&signed_key.public_key.serialize(), &mut rng)?.to_vec();
-        let kyber_key = kem::KeyPair::generate(kem::KeyType::Kyber1024, &mut rng);
-        let kyber_sig =
-            identity.private_key().calculate_signature(&kyber_key.public_key.serialize(), &mut rng)?.to_vec();
+            let identity_pair = IdentityKeyPair::from(material.identity.clone());
+            let identity_key = *identity_pair.identity_key();
+            let mut store = InMemSignalProtocolStore::new(identity_pair, material.registration_id)?;
 
-        let identity_key = *identity.identity_key();
-        let mut store = InMemSignalProtocolStore::new(identity, registration_id)?;
+            store
+                .save_signed_pre_key(
+                    material.signed_id.into(),
+                    &SignedPreKeyRecord::new(
+                        material.signed_id.into(),
+                        Timestamp::from_epoch_millis(now_ms()),
+                        &material.signed,
+                        &material.signed_sig,
+                    ),
+                )
+                .await?;
+            store
+                .save_kyber_pre_key(
+                    material.kyber_id.into(),
+                    &KyberPreKeyRecord::new(
+                        material.kyber_id.into(),
+                        Timestamp::from_epoch_millis(now_ms()),
+                        &material.kyber,
+                        &material.kyber_sig,
+                    ),
+                )
+                .await?;
 
-        store
-            .save_signed_pre_key(
-                1.into(),
-                &SignedPreKeyRecord::new(
-                    1.into(),
-                    Timestamp::from_epoch_millis(now_ms()),
-                    &signed_key,
-                    &signed_sig,
-                ),
-            )
-            .await?;
-        store
-            .save_kyber_pre_key(
-                1.into(),
-                &KyberPreKeyRecord::new(
-                    1.into(),
-                    Timestamp::from_epoch_millis(now_ms()),
-                    &kyber_key,
-                    &kyber_sig,
-                ),
-            )
-            .await?;
+            let bundle = PreKeyBundle::new(
+                material.registration_id,
+                device,
+                None, // v0: no one-time EC prekeys (matches official last-resort usage)
+                material.signed_id.into(),
+                material.signed.public_key,
+                material.signed_sig.clone(),
+                material.kyber_id.into(),
+                material.kyber.public_key,
+                material.kyber_sig.clone(),
+                identity_key,
+            )?;
 
-        let bundle = PreKeyBundle::new(
-            registration_id,
-            device,
-            None, // v0 不发一次性 EC prekey（与官方 last-resort 用法一致）
-            1.into(),
-            signed_key.public_key,
-            signed_sig,
-            1.into(),
-            kyber_key.public_key,
-            kyber_sig,
-            identity_key,
-        )?;
-
-        let local = ProtocolAddress::new(name.clone(), device);
-        let bundle_json = bundle_json_of(&bundle)?;
-        Ok((store, local, bundle_json))
-    })().now_or_never();
+            let local = ProtocolAddress::new(name.clone(), device);
+            let bundle_json = bundle_json_of(&bundle)?;
+            Ok((store, local, bundle_json))
+        })()
+        .now_or_never();
 
     match result {
         Some(Ok((store, local, bundle_json))) => {
@@ -231,11 +237,106 @@ fn init(name: String, ev: &tokio::sync::mpsc::UnboundedSender<CryptoEvent>) -> O
         None => {
             let _ = ev.send(CryptoEvent::Failed {
                 context: "init".into(),
-                detail: "now_or_never 意外挂起".into(),
+                detail: "now_or_never hang".into(),
             });
             None
         }
     }
+}
+
+// ---------- key material persistence ----------
+
+struct KeyMaterial {
+    registration_id: u32,
+    identity: KeyPair,
+    signed_id: u32,
+    signed: KeyPair,
+    signed_sig: Vec<u8>,
+    kyber_id: u32,
+    kyber: kem::KeyPair,
+    kyber_sig: Vec<u8>,
+}
+
+fn generate_material() -> Result<KeyMaterial, CryptoError> {
+    let mut rng = fresh_rng();
+    let identity = KeyPair::generate(&mut rng);
+    // Signal registration id: an opaque small integer
+    let registration_id = rng.random_range(1..0x3FFF);
+    let signed = KeyPair::generate(&mut rng);
+    let kyber = kem::KeyPair::generate(kem::KeyType::Kyber1024, &mut rng);
+    let signer = IdentityKeyPair::from(identity.clone());
+    let signed_sig = signer
+        .private_key()
+        .calculate_signature(&signed.public_key.serialize(), &mut rng)?
+        .to_vec();
+    let kyber_sig = signer
+        .private_key()
+        .calculate_signature(&kyber.public_key.serialize(), &mut rng)?
+        .to_vec();
+    Ok(KeyMaterial {
+        registration_id,
+        identity,
+        signed_id: 1,
+        signed,
+        signed_sig,
+        kyber_id: 1,
+        kyber,
+        kyber_sig,
+    })
+}
+
+fn keys_file(keys_dir: &str, name: &str) -> std::path::PathBuf {
+    std::path::Path::new(keys_dir).join(format!("keys_{}.json", name))
+}
+
+fn save_key_material(name: &str, keys_dir: &str, m: &KeyMaterial) -> Result<(), CryptoError> {
+    std::fs::create_dir_all(keys_dir).map_err(|e| CryptoError(e.to_string()))?;
+    let json = serde_json::json!({
+        "registration_id": m.registration_id,
+        "identity": { "public": b64e(&m.identity.public_key.serialize()), "private": b64e(&m.identity.private_key.serialize()) },
+        "signed_pre_key": {
+            "id": m.signed_id,
+            "public": b64e(&m.signed.public_key.serialize()),
+            "private": b64e(&m.signed.private_key.serialize()),
+            "signature": b64e(&m.signed_sig),
+        },
+        "kyber_pre_key": {
+            "id": m.kyber_id,
+            "public": b64e(&m.kyber.public_key.serialize()),
+            "private": b64e(&m.kyber.secret_key.serialize()),
+            "signature": b64e(&m.kyber_sig),
+        },
+    });
+    std::fs::write(keys_file(keys_dir, name), json.to_string())
+        .map_err(|e| CryptoError(e.to_string()))
+}
+
+fn load_key_material(name: &str, keys_dir: &str) -> Option<KeyMaterial> {
+    let text = std::fs::read_to_string(keys_file(keys_dir, name)).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let pair = |x: &serde_json::Value| -> Option<KeyPair> {
+        Some(
+            KeyPair::from_public_and_private(
+                &b64d(x["public"].as_str()?),
+                &b64d(x["private"].as_str()?),
+            )
+            .ok()?,
+        )
+    };
+    Some(KeyMaterial {
+        registration_id: v["registration_id"].as_u64()? as u32,
+        identity: pair(&v["identity"])?,
+        signed_id: v["signed_pre_key"]["id"].as_u64()? as u32,
+        signed: pair(&v["signed_pre_key"])?,
+        signed_sig: b64d(v["signed_pre_key"]["signature"].as_str()?),
+        kyber_id: v["kyber_pre_key"]["id"].as_u64()? as u32,
+        kyber: kem::KeyPair::from_public_and_private(
+            &b64d(v["kyber_pre_key"]["public"].as_str()?),
+            &b64d(v["kyber_pre_key"]["private"].as_str()?),
+        )
+        .ok()?,
+        kyber_sig: b64d(v["kyber_pre_key"]["signature"].as_str()?),
+    })
 }
 
 fn establish(crypto: &mut Crypto, peer: &str, bundle_json: &str) -> Result<(), CryptoError> {
@@ -600,8 +701,9 @@ mod tests {
     /// 注册 → 建会话 → 加密 → 解密。守护"Init 被守卫吞掉"一类的回归。
     #[test]
     fn crypto_thread_lifecycle() {
-        let (alice_tx, mut alice_ev) = spawn();
-        let (bob_tx, mut bob_ev) = spawn();
+        let keys_dir = std::env::temp_dir().join("hermes-test-keys").to_string_lossy().into_owned();
+        let (alice_tx, mut alice_ev) = spawn(keys_dir.clone());
+        let (bob_tx, mut bob_ev) = spawn(keys_dir.clone());
 
         alice_tx.send(CryptoCmd::Init { name: "Alice".into() }).unwrap();
         let registered = alice_ev.blocking_recv().expect("registered event");

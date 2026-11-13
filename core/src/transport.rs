@@ -47,13 +47,14 @@ impl Handle {
 /// 事件经 mpsc 交给渲染层桥（如 Tauri emit）。
 pub async fn connect(
     url: &str,
+    keys_dir: &str,
 ) -> Result<(Handle, mpsc::UnboundedReceiver<ClientEvent>), String> {
     let (ws, _resp) = tokio_tungstenite::connect_async(url)
         .await
         .map_err(|e| format!("连接失败: {e}"))?;
 
     // crypto 线程：明文/密文转换全部发生在那条线程里，密钥不出界
-    let (crypto_tx, mut crypto_rx) = crypto::spawn();
+    let (crypto_tx, mut crypto_rx) = crypto::spawn(keys_dir.to_string());
 
     let (mut sink, mut stream) = ws.split();
     let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<ClientFrame>();
