@@ -64,7 +64,6 @@ pub async fn connect(
         let mut cursor: u64 = 0;
         let mut seen = Bloom::new(1 << 20);
         let mut joined = false;
-        let mut me = String::new();
         let mut members: Vec<String> = Vec::new();
         let mut established: HashSet<String> = HashSet::new();
         // 懒建会话期间的待发队列：peer -> [(dedup_id, text)]
@@ -82,14 +81,13 @@ pub async fn connect(
                             break;
                         }
                         ClientFrame::Join { name, cursor: c } => {
-                            me = name.clone();
-                            cursor = c;
+                            // 先构造帧再移交 name，避免移动冲突
+                            let join_frame = ClientFrame::Join { name: name.clone(), cursor: c }.to_json();
                             joined = true;
-                            // crypto 初始化：生成身份与 prekey 套件
+                            cursor = c;
+                            // crypto 初始化：生成身份与 prekey 套件（带名字建地址）
                             let _ = crypto_tx.send(CryptoCmd::Init { name });
-                            if sink.send(Message::text(
-                                ClientFrame::Join { name, cursor: c }.to_json(),
-                            )).await.is_err() {
+                            if sink.send(Message::text(join_frame)).await.is_err() {
                                 let _ = ev_tx.send(ClientEvent::Disconnected);
                                 break;
                             }
@@ -209,7 +207,7 @@ pub async fn connect(
                             if seq > cursor { cursor = seq; }
                             let _ = ev_tx.send(ClientEvent::Chat { from, text, dedup_id, seq });
                         }
-                        ServerFrame::Enc { from, body, dedup_id, seq } => {
+                        ServerFrame::Enc { from, body, dedup_id: _, seq } => {
                             // 自己的消息也会被加密回声（自会话），统一解密路径
                             if seq > cursor { cursor = seq; }
                             let _ = crypto_tx.send(CryptoCmd::Decrypt {

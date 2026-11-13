@@ -3,6 +3,9 @@ name = "hermes-core"
 version = "0.1.0"
 edition = "2021"
 
+[dev-dependencies]
+env_logger = "0.11"
+
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
 tokio-tungstenite = "0.27"
@@ -19,3 +22,4 @@ rand = "0.9"
 #   git clone --depth 1 https://github.com/signalapp/libsignal <路径>
 # crates.io 同名 crate（0.1.0）是社区旧 C 绑定封装，勿用。
 libsignal-protocol = { path = "D:/programs/vendor/libsignal/rust/protocol" }
+libsignal-core = { path = "D:/programs/vendor/libsignal/rust/core" }

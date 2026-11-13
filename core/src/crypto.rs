@@ -1,4 +1,4 @@
-//! 端到端加密 —— Signal Protocol（官方 libsignal 纯 Rust 实现）封装。
+﻿//! 端到端加密 —— Signal Protocol（官方 libsignal 纯 Rust 实现）封装。
 //!
 //! 边界纪律（docs/STRUCTURE.md）：
 //! - 密钥与会话状态**只存在于本模块的线程内**，永不出界；
@@ -14,6 +14,9 @@
 //! { registration_id, device_id, identity_key,
 //!   signed_pre_key: {id, public, signature},
 //!   kyber_pre_key:  {id, public, signature} }     // 全部 base64（id 为数字）
+//!
+//! 注意：libsignal 依赖 rand 0.9.4 的 trait 体系 —— RNG 必须用同一大版本
+//! 的 `StdRng`（`OsRng` 在跨版本 trait 下不实现 CryptoRng，官方坑）。
 
 use std::sync::mpsc as std_mpsc;
 use std::time::SystemTime;
@@ -21,12 +24,38 @@ use std::time::SystemTime;
 use base64::Engine as _;
 use futures_util::FutureExt as _;
 use libsignal_protocol::{
-    CiphertextMessage, DeviceId, IdentityKey, IdentityKeyPair, InMemSignalProtocolStore, KeyPair,
-    KyberPreKeyRecord, PreKeyBundle, PreKeySignalMessage, ProtocolAddress, SignalMessage,
-    SignedPreKeyRecord, Timestamp, initiate_session, kem, message_decrypt, message_encrypt,
+    CiphertextMessage, DeviceId, GenericSignedPreKey as _, IdentityKey, IdentityKeyPair,
+    IdentityKeyStore as _, InMemSignalProtocolStore, KeyPair, KyberPreKeyStore as _,
+    KyberPreKeyRecord, PreKeyBundle, PreKeySignalMessage, ProtocolAddress,
+    SessionStore as _, SignalMessage, SignalProtocolError, SignedPreKeyRecord,
+    SignedPreKeyStore as _, Timestamp, initiate_session, kem, message_decrypt,
+    message_encrypt,
 };
-use rand::rngs::OsRng;
-use rand::{CryptoRng, Rng};
+use rand::rngs::StdRng;
+use rand::{Rng as _, SeedableRng as _};
+
+/// 内部错误：统一把 libsignal 的错误族转成字符串。
+/// （InvalidDeviceId 是 libsignal_core 私有模块的类型，只能闭包处理）
+#[derive(Debug)]
+struct CryptoError(String);
+
+impl From<SignalProtocolError> for CryptoError {
+    fn from(e: SignalProtocolError) -> Self {
+        CryptoError(e.to_string())
+    }
+}
+
+impl From<libsignal_core::curve::CurveError> for CryptoError {
+    fn from(e: libsignal_core::curve::CurveError) -> Self {
+        CryptoError(e.to_string())
+    }
+}
+
+impl From<String> for CryptoError {
+    fn from(e: String) -> Self {
+        CryptoError(e)
+    }
+}
 
 /// 发往 crypto 线程的命令
 pub enum CryptoCmd {
@@ -53,11 +82,8 @@ pub type CryptoCmdTx = std_mpsc::Sender<CryptoCmd>;
 pub type CryptoEventRx = tokio::sync::mpsc::UnboundedReceiver<CryptoEvent>;
 
 struct Crypto {
-    me: String,
     local: ProtocolAddress,
     store: InMemSignalProtocolStore,
-    bundle_json: String,
-    rng: OsRng,
 }
 
 /// 起 crypto 线程。channel 两端都是线程安全的。
@@ -69,75 +95,48 @@ pub fn spawn() -> (CryptoCmdTx, CryptoEventRx) {
         .spawn(move || {
             let mut state: Option<Crypto> = None;
             while let Ok(cmd) = cmd_rx.recv() {
-                match cmd {
-                    CryptoCmd::Init { name } => {
-                        state = init(name, &ev_tx);
-                    }
-                    CryptoCmd::Establish { peer, bundle_json } => {
-                        let Some(crypto) = state.as_mut() else {
-                            let _ = ev_tx.send(CryptoEvent::Failed {
-                                context: format!("establish {peer}"),
-                                detail: "crypto 未初始化".into(),
-                            });
-                            continue;
-                        };
+                let Some(crypto) = state.as_mut() else {
+                    let _ = ev_tx.send(CryptoEvent::Failed {
+                        context: "crypto".into(),
+                        detail: "尚未初始化（先 Init）".into(),
+                    });
+                    continue;
+                };
+                let event = match cmd {
+                    CryptoCmd::Init { .. } => CryptoEvent::Failed {
+                        context: "init".into(),
+                        detail: "重复初始化".into(),
+                    },
+                    CryptoCmd::Establish { peer, bundle_json } =>
                         match establish(crypto, &peer, &bundle_json) {
-                            Ok(()) => {
-                                let _ = ev_tx.send(CryptoEvent::Established { peer });
-                            }
-                            Err(e) => {
-                                let _ = ev_tx.send(CryptoEvent::Failed {
-                                    context: format!("establish {peer}"),
-                                    detail: e,
-                                });
-                            }
-                        }
-                    }
-                    CryptoCmd::Encrypt { peer, dedup_id, plaintext } => {
-                        let Some(crypto) = state.as_mut() else {
-                            let _ = ev_tx.send(CryptoEvent::Failed {
-                                context: format!("encrypt {peer}"),
-                                detail: "crypto 未初始化".into(),
-                            });
-                            continue;
-                        };
+                            Ok(()) => CryptoEvent::Established { peer },
+                            Err(e) => CryptoEvent::Failed {
+                                context: format!("establish {peer}"),
+                                detail: e.0,
+                            },
+                        },
+                    CryptoCmd::Encrypt { peer, dedup_id, plaintext } =>
                         match encrypt(crypto, &peer, &plaintext) {
-                            Ok(body) => {
-                                let _ = ev_tx.send(CryptoEvent::Encrypted {
-                                    peer,
-                                    dedup_id,
-                                    body_b64: b64e(&body),
-                                });
-                            }
-                            Err(e) => {
-                                let _ = ev_tx.send(CryptoEvent::Failed {
-                                    context: format!("encrypt {peer}"),
-                                    detail: e,
-                                });
-                            }
-                        }
-                    }
-                    CryptoCmd::Decrypt { peer, body_b64 } => {
-                        let Some(crypto) = state.as_mut() else {
-                            let _ = ev_tx.send(CryptoEvent::Failed {
-                                context: format!("decrypt {peer}"),
-                                detail: "crypto 未初始化".into(),
-                            });
-                            continue;
-                        };
+                            Ok(body) => CryptoEvent::Encrypted {
+                                peer,
+                                dedup_id,
+                                body_b64: b64e(&body),
+                            },
+                            Err(e) => CryptoEvent::Failed {
+                                context: format!("encrypt {peer}"),
+                                detail: e.0,
+                            },
+                        },
+                    CryptoCmd::Decrypt { peer, body_b64 } =>
                         match decrypt(crypto, &peer, &body_b64) {
-                            Ok(text) => {
-                                let _ = ev_tx.send(CryptoEvent::Decrypted { peer, text });
-                            }
-                            Err(e) => {
-                                let _ = ev_tx.send(CryptoEvent::Failed {
-                                    context: format!("decrypt {peer}"),
-                                    detail: e,
-                                });
-                            }
-                        }
-                    }
-                }
+                            Ok(text) => CryptoEvent::Decrypted { peer, text },
+                            Err(e) => CryptoEvent::Failed {
+                                context: format!("decrypt {peer}"),
+                                detail: e.0,
+                            },
+                        },
+                };
+                let _ = ev_tx.send(event);
             }
         })
         .expect("spawn crypto thread");
@@ -146,22 +145,34 @@ pub fn spawn() -> (CryptoCmdTx, CryptoEventRx) {
 
 // ---------- 操作实现（async 签名保留 libsignal 的形态，同步驱动） ----------
 
+/// 每次操作独立 OS 熵种子的 StdRng（临时密钥的熵源必须来自 OS）
+fn fresh_rng() -> StdRng {
+    StdRng::from_os_rng()
+}
+
+fn device_id() -> Result<DeviceId, CryptoError> {
+    DeviceId::new(1).map_err(|_| CryptoError("invalid device id".into()))
+}
+
 fn init(name: String, ev: &tokio::sync::mpsc::UnboundedSender<CryptoEvent>) -> Option<Crypto> {
-    let result: Result<(InMemSignalProtocolStore, ProtocolAddress, String), String> = (|| async {
-        let mut rng = OsRng;
+    let result: Option<Result<(InMemSignalProtocolStore, ProtocolAddress, String), CryptoError>> =
+        (|| async {
+        let mut rng = fresh_rng();
+        let device = device_id()?;
         let identity = IdentityKeyPair::generate(&mut rng);
-        let registration_id = libsignal_protocol::generate_registration_id(&mut rng);
+        // Signal 的 registration id 是个不透明的小整数
+        let registration_id = rng.random_range(1..0x3FFF);
 
         // 先签名（identity 还没被 store 吃掉）
         let signed_key = KeyPair::generate(&mut rng);
         let signed_sig =
-            identity.private_key().calculate_signature(&signed_key.public_key.serialize(), &mut rng)?;
+            identity.private_key().calculate_signature(&signed_key.public_key.serialize(), &mut rng)?.to_vec();
         let kyber_key = kem::KeyPair::generate(kem::KeyType::Kyber1024, &mut rng);
         let kyber_sig =
-            identity.private_key().calculate_signature(&kyber_key.public_key.serialize(), &mut rng)?;
+            identity.private_key().calculate_signature(&kyber_key.public_key.serialize(), &mut rng)?.to_vec();
 
         let identity_key = *identity.identity_key();
-        let store = InMemSignalProtocolStore::new(identity, registration_id)?;
+        let mut store = InMemSignalProtocolStore::new(identity, registration_id)?;
 
         store
             .save_signed_pre_key(
@@ -188,7 +199,7 @@ fn init(name: String, ev: &tokio::sync::mpsc::UnboundedSender<CryptoEvent>) -> O
 
         let bundle = PreKeyBundle::new(
             registration_id,
-            DeviceId::new(1)?,
+            device,
             None, // v0 不发一次性 EC prekey（与官方 last-resort 用法一致）
             1.into(),
             signed_key.public_key,
@@ -199,32 +210,34 @@ fn init(name: String, ev: &tokio::sync::mpsc::UnboundedSender<CryptoEvent>) -> O
             identity_key,
         )?;
 
-        Ok((store, ProtocolAddress::new(name.clone(), DeviceId::new(1)?), bundle_json_of(&bundle)?))
+        let local = ProtocolAddress::new(name.clone(), device);
+        let bundle_json = bundle_json_of(&bundle)?;
+        Ok((store, local, bundle_json))
     })().now_or_never();
 
-    let Ok(Ok((store, local, bundle_json))) = result else {
-        let detail = match result {
-            Some(Err(e)) => e,
-            _ => "now_or_never 意外挂起".into(),
-        };
-        let _ = ev.send(CryptoEvent::Failed { context: "init".into(), detail });
-        return None;
-    };
-
-    let _ = ev.send(CryptoEvent::Registered { bundle_json: bundle_json.clone() });
-    Some(Crypto {
-        me: name,
-        local,
-        store,
-        bundle_json,
-        rng: OsRng,
-    })
+    match result {
+        Some(Ok((store, local, bundle_json))) => {
+            let _ = ev.send(CryptoEvent::Registered { bundle_json: bundle_json.clone() });
+            Some(Crypto { local, store })
+        }
+        Some(Err(e)) => {
+            let _ = ev.send(CryptoEvent::Failed { context: "init".into(), detail: e.0 });
+            None
+        }
+        None => {
+            let _ = ev.send(CryptoEvent::Failed {
+                context: "init".into(),
+                detail: "now_or_never 意外挂起".into(),
+            });
+            None
+        }
+    }
 }
 
-fn establish(crypto: &mut Crypto, peer: &str, bundle_json: &str) -> Result<(), String> {
+fn establish(crypto: &mut Crypto, peer: &str, bundle_json: &str) -> Result<(), CryptoError> {
     let run = async {
         let bundle = parse_bundle(bundle_json)?;
-        let peer_addr = ProtocolAddress::new(peer.to_string(), DeviceId::new(1)?);
+        let peer_addr = ProtocolAddress::new(peer.to_string(), device_id()?);
         initiate_session(
             &peer_addr,
             &crypto.local,
@@ -232,17 +245,17 @@ fn establish(crypto: &mut Crypto, peer: &str, bundle_json: &str) -> Result<(), S
             &mut crypto.store.identity_store,
             &bundle,
             SystemTime::now(),
-            &mut crypto.rng,
+            &mut fresh_rng(),
         )
         .await?;
         Ok(())
     };
-    run.now_or_never().unwrap_or_else(|| Err("establish 意外挂起".into()))
+    run.now_or_never().unwrap_or_else(|| Err(CryptoError("establish 意外挂起".into())))
 }
 
-fn encrypt(crypto: &mut Crypto, peer: &str, plaintext: &[u8]) -> Result<Vec<u8>, String> {
+fn encrypt(crypto: &mut Crypto, peer: &str, plaintext: &[u8]) -> Result<Vec<u8>, CryptoError> {
     let run = async {
-        let peer_addr = ProtocolAddress::new(peer.to_string(), DeviceId::new(1)?);
+        let peer_addr = ProtocolAddress::new(peer.to_string(), device_id()?);
         let ct = message_encrypt(
             plaintext,
             &peer_addr,
@@ -250,15 +263,15 @@ fn encrypt(crypto: &mut Crypto, peer: &str, plaintext: &[u8]) -> Result<Vec<u8>,
             &mut crypto.store.session_store,
             &mut crypto.store.identity_store,
             SystemTime::now(),
-            &mut crypto.rng,
+            &mut fresh_rng(),
         )
         .await?;
         Ok(ct.serialize().to_vec())
     };
-    run.now_or_never().unwrap_or_else(|| Err("encrypt 意外挂起".into()))
+    run.now_or_never().unwrap_or_else(|| Err(CryptoError("encrypt 意外挂起".into())))
 }
 
-fn decrypt(crypto: &mut Crypto, peer: &str, body_b64: &str) -> Result<String, String> {
+fn decrypt(crypto: &mut Crypto, peer: &str, body_b64: &str) -> Result<String, CryptoError> {
     let run = async {
         let bytes = b64d(body_b64);
         // wire 首字节是消息类型标签（whisper=2 / prekey=3，见 CiphertextMessageType）
@@ -269,9 +282,9 @@ fn decrypt(crypto: &mut Crypto, peer: &str, body_b64: &str) -> Result<String, St
             Some(2) => {
                 CiphertextMessage::SignalMessage(SignalMessage::try_from(bytes.as_slice())?)
             }
-            other => return Err(format!("未知密文类型 {other:?}")),
+            other => return Err(CryptoError(format!("未知密文类型 {other:?}"))),
         };
-        let peer_addr = ProtocolAddress::new(peer.to_string(), DeviceId::new(1)?);
+        let peer_addr = ProtocolAddress::new(peer.to_string(), device_id()?);
         let plaintext = message_decrypt(
             &msg,
             &peer_addr,
@@ -281,12 +294,12 @@ fn decrypt(crypto: &mut Crypto, peer: &str, body_b64: &str) -> Result<String, St
             &mut crypto.store.pre_key_store,
             &crypto.store.signed_pre_key_store,
             &mut crypto.store.kyber_pre_key_store,
-            &mut crypto.rng,
+            &mut fresh_rng(),
         )
         .await?;
-        String::from_utf8(plaintext).map_err(|_| "解密结果不是 UTF-8".to_string())
+        String::from_utf8(plaintext).map_err(|_| CryptoError("解密结果不是 UTF-8".into()))
     };
-    run.now_or_never().unwrap_or_else(|| Err("decrypt 意外挂起".into()))
+    run.now_or_never().unwrap_or_else(|| Err(CryptoError("decrypt 意外挂起".into())))
 }
 
 // ---------- bundle JSON 编解码 ----------
@@ -301,50 +314,53 @@ fn b64d(s: &str) -> Vec<u8> {
         .unwrap_or_default()
 }
 
-fn bundle_json_of(bundle: &PreKeyBundle) -> Result<String, String> {
+fn bundle_json_of(bundle: &PreKeyBundle) -> Result<String, CryptoError> {
     let signed_pub = bundle.signed_pre_key_public()?;
     let kyber_pub = bundle.kyber_pre_key_public()?;
     Ok(serde_json::json!({
         "registration_id": bundle.registration_id()?,
         "device_id": 1,
-        "identity_key": b64e(bundle.identity_key()?.serialize()),
+        "identity_key": b64e(&bundle.identity_key()?.serialize()),
         "signed_pre_key": {
-            "id": bundle.signed_pre_key_id()?.to_u32(),
-            "public": b64e(signed_pub.serialize()),
-            "signature": b64e(bundle.signed_pre_key_signature()?),
+            "id": u32::from(bundle.signed_pre_key_id()?),
+            "public": b64e(&signed_pub.serialize()),
+            "signature": b64e(&bundle.signed_pre_key_signature()?),
         },
         "kyber_pre_key": {
-            "id": bundle.kyber_pre_key_id()?.to_u32(),
-            "public": b64e(kyber_pub.serialize()),
-            "signature": b64e(bundle.kyber_pre_key_signature()?),
+            "id": u32::from(bundle.kyber_pre_key_id()?),
+            "public": b64e(&kyber_pub.serialize()),
+            "signature": b64e(&bundle.kyber_pre_key_signature()?),
         },
     })
     .to_string())
 }
 
-fn parse_bundle(json: &str) -> Result<PreKeyBundle, String> {
-    let v: serde_json::Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
+fn parse_bundle(json: &str) -> Result<PreKeyBundle, CryptoError> {
+    let v: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| CryptoError(e.to_string()))?;
     let spk = &v["signed_pre_key"];
     let kyber = &v["kyber_pre_key"];
-    let id = |x: &serde_json::Value| -> Result<u32, String> {
-        x.as_u64().and_then(|n| u32::try_from(n).ok()).ok_or_else(|| "id 非法".to_string())
+    let id = |x: &serde_json::Value| -> Result<u32, CryptoError> {
+        x.as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+            .ok_or_else(|| CryptoError("id 非法".into()))
     };
     let identity = IdentityKey::new(deserialize_curve_pub(
         v["identity_key"].as_str().unwrap_or_default(),
     )?);
     PreKeyBundle::new(
         v["registration_id"].as_u64().unwrap_or(0) as u32,
-        DeviceId::new(1)?,
+        device_id()?,
         None,
-        id(spk["id"])?,
+        id(&spk["id"])?.into(),
         deserialize_curve_pub(spk["public"].as_str().unwrap_or_default())?,
         b64d(spk["signature"].as_str().unwrap_or_default()),
-        id(kyber["id"])?,
+        id(&kyber["id"])?.into(),
         deserialize_kyber_pub(kyber["public"].as_str().unwrap_or_default())?,
         b64d(kyber["signature"].as_str().unwrap_or_default()),
         identity,
     )
-    .map_err(|e| e.to_string())
+    .map_err(CryptoError::from)
 }
 
 fn deserialize_curve_pub(s: &str) -> Result<libsignal_protocol::PublicKey, String> {
@@ -356,8 +372,8 @@ fn deserialize_kyber_pub(s: &str) -> Result<kem::PublicKey, String> {
 }
 
 fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
 }
@@ -368,20 +384,26 @@ fn now_ms() -> u64 {
 mod tests {
     use super::*;
 
-    /// 建一个对端：身份 + prekey 套件，返回 (地址, store, bundle JSON)
-    async fn make_peer(name: &str) -> (ProtocolAddress, InMemSignalProtocolStore, String) {
-        let mut rng = OsRng;
+    /// 建一个对端：身份 + prekey 套件。
+    /// 返回 (地址, store, bundle 对象, bundle JSON)。
+    async fn make_peer(
+        name: &str,
+    ) -> (ProtocolAddress, InMemSignalProtocolStore, PreKeyBundle, String) {
+        let mut rng = fresh_rng();
+        let device = device_id().unwrap();
         let identity = IdentityKeyPair::generate(&mut rng);
         let signed_key = KeyPair::generate(&mut rng);
         let kyber_key = kem::KeyPair::generate(kem::KeyType::Kyber1024, &mut rng);
         let signed_sig = identity
             .private_key()
             .calculate_signature(&signed_key.public_key.serialize(), &mut rng)
-            .unwrap();
+            .unwrap()
+            .to_vec();
         let kyber_sig = identity
             .private_key()
             .calculate_signature(&kyber_key.public_key.serialize(), &mut rng)
-            .unwrap();
+            .unwrap()
+            .to_vec();
         let mut store = InMemSignalProtocolStore::new(identity, 1).unwrap();
         store
             .save_signed_pre_key(
@@ -409,7 +431,7 @@ mod tests {
             .unwrap();
         let bundle = PreKeyBundle::new(
             1,
-            DeviceId::new(1).unwrap(),
+            device,
             None,
             1.into(),
             signed_key.public_key,
@@ -420,63 +442,102 @@ mod tests {
             *store.identity_store.get_identity_key_pair().await.unwrap().identity_key(),
         )
         .unwrap();
-        let addr = ProtocolAddress::new(name.to_string(), DeviceId::new(1).unwrap());
-        (addr, store, bundle_json_of(&bundle).unwrap())
+        let addr = ProtocolAddress::new(name.to_string(), device);
+        let bundle_json = bundle_json_of(&bundle).unwrap();
+        (addr, store, bundle, bundle_json)
     }
 
-    #[test]
-    fn x3dh_and_double_ratchet_roundtrip() {
-        let run = async {
-            let (alice_addr, mut alice, bob_bundle) = make_peer("alice").await;
-            let (bob_addr, mut bob, _) = make_peer("bob").await;
+    /// 完整回环：Alice 建 X3DH/PQXDH 会话 → 单向 → 双向 → 多轮棘轮。
+    /// json=true 时 bundle 经 JSON 编解码链路（wire 形态）。
+    async fn run_roundtrip(json: bool) -> Result<(), CryptoError> {
+        let (alice_addr, mut alice, _, _alice_bundle_json) = make_peer("alice").await;
+        let (bob_addr, mut bob, bob_bundle, bob_bundle_json) = make_peer("bob").await;
+        let _ = _alice_bundle_json;
 
-            // Alice 用 Bob 的注册包建会话（X3DH/PQXDH）
-            let bundle = parse_bundle(&bob_bundle)?;
-            initiate_session(
-                &bob_addr,
-                &alice_addr,
-                &mut alice.session_store,
-                &mut alice.identity_store,
-                &bundle,
-                SystemTime::now(),
-                &mut OsRng,
-            )
-            .await?;
+        let bundle = if json {
+            assert_eq!(
+                bundle_json_of(&parse_bundle(&bob_bundle_json)?)?,
+                bob_bundle_json,
+                "bundle json roundtrip"
+            );
+            parse_bundle(&bob_bundle_json)?
+        } else {
+            bob_bundle
+        };
 
-            // Alice → Bob：PreKey 消息建反向会话 + 双棘轮首条
+        // Alice 用 Bob 的注册包建会话
+        initiate_session(
+            &bob_addr,
+            &alice_addr,
+            &mut alice.session_store,
+            &mut alice.identity_store,
+            &bundle,
+            SystemTime::now(),
+            &mut fresh_rng(),
+        )
+        .await?;
+
+        // Alice → Bob：PreKey 消息（建立 Bob 侧会话）+ 双棘轮首条
+        let ct = message_encrypt(
+            b"hello-e2e",
+            &bob_addr,
+            &alice_addr,
+            &mut alice.session_store,
+            &mut alice.identity_store,
+            SystemTime::now(),
+            &mut fresh_rng(),
+        )
+        .await?;
+        let pt = message_decrypt(
+            &ct,
+            &alice_addr,
+            &bob_addr,
+            &mut bob.session_store,
+            &mut bob.identity_store,
+            &mut bob.pre_key_store,
+            &bob.signed_pre_key_store,
+            &mut bob.kyber_pre_key_store,
+            &mut fresh_rng(),
+        )
+        .await?;
+        assert_eq!(pt, b"hello-e2e");
+
+        // Bob → Alice：棘轮已双向
+        let ct = message_encrypt(
+            b"received",
+            &alice_addr,
+            &bob_addr,
+            &mut bob.session_store,
+            &mut bob.identity_store,
+            SystemTime::now(),
+            &mut fresh_rng(),
+        )
+        .await?;
+        let pt = message_decrypt(
+            &ct,
+            &bob_addr,
+            &alice_addr,
+            &mut alice.session_store,
+            &mut alice.identity_store,
+            &mut alice.pre_key_store,
+            &alice.signed_pre_key_store,
+            &mut alice.kyber_pre_key_store,
+            &mut fresh_rng(),
+        )
+        .await?;
+        assert_eq!(pt, b"received");
+
+        // 连续多轮：前向保密的棘轮步进
+        for i in 0..3u32 {
+            let text = format!("round-{i}");
             let ct = message_encrypt(
-                b"你好，端到端",
-                &bob_addr,
-                &alice_addr,
-                &mut alice.session_store,
-                &mut alice.identity_store,
-                SystemTime::now(),
-                &mut OsRng,
-            )
-            .await?;
-            let pt = message_decrypt(
-                &ct,
+                text.as_bytes(),
                 &alice_addr,
                 &bob_addr,
                 &mut bob.session_store,
                 &mut bob.identity_store,
-                &mut bob.pre_key_store,
-                &bob.signed_pre_key_store,
-                &mut bob.kyber_pre_key_store,
-                &mut OsRng,
-            )
-            .await?;
-            assert_eq!(pt, b"你好，端到端");
-
-            // Bob → Alice：棘轮已双向
-            let ct = message_encrypt(
-                b"received",
-                &alice_addr,
-                &bob_addr,
-                &mut bob.session_store,
-                &mut bob.identity_store,
                 SystemTime::now(),
-                &mut OsRng,
+                &mut fresh_rng(),
             )
             .await?;
             let pt = message_decrypt(
@@ -488,44 +549,43 @@ mod tests {
                 &mut alice.pre_key_store,
                 &alice.signed_pre_key_store,
                 &mut alice.kyber_pre_key_store,
-                &mut OsRng,
+                &mut fresh_rng(),
             )
             .await?;
-            assert_eq!(pt, b"received");
+            assert_eq!(pt, text.as_bytes());
+        }
 
-            // 连续多轮：前向保密的棘轮步进
-            for i in 0..3u32 {
-                let text = format!("round-{i}");
-                let ct = message_encrypt(
-                    text.as_bytes(),
-                    &alice_addr,
-                    &bob_addr,
-                    &mut alice.session_store,
-                    &mut alice.identity_store,
-                    SystemTime::now(),
-                    &mut OsRng,
-                )
-                .await?;
-                let pt = message_decrypt(
-                    &ct,
-                    &alice_addr,
-                    &bob_addr,
-                    &mut bob.session_store,
-                    &mut bob.identity_store,
-                    &mut bob.pre_key_store,
-                    &bob.signed_pre_key_store,
-                    &mut bob.kyber_pre_key_store,
-                    &mut OsRng,
-                )
-                .await?;
-                assert_eq!(pt, text.as_bytes());
-            }
+        // bundle JSON 往返无损
+        if json {
+            let _ = parse_bundle(&bob_bundle_json)?;
+        }
 
-            // bundle JSON 往返无损（parse_bundle 与 bundle_json_of 对得上）
-            let _ = bundle;
+        Ok(())
+    }
 
-            Ok::<(), String>(())
-        };
-        assert_eq!(run.now_or_never().unwrap(), Ok(()));
+    #[test]
+    fn x3dh_and_double_ratchet_roundtrip_in_memory_bundle() {
+        let _ = env_logger::builder().is_test(true).try_init();
+        run_roundtrip(false).now_or_never().unwrap().unwrap();
+    }
+
+    #[test]
+    fn x3dh_and_double_ratchet_roundtrip_via_wire_json() {
+        run_roundtrip(true).now_or_never().unwrap().unwrap();
+    }
+
+    #[test]
+    fn key_serialization_roundtrip() {
+        let mut rng = fresh_rng();
+        let kp = KeyPair::generate(&mut rng);
+        let curve_bytes = kp.public_key.serialize();
+        let curve_pk = libsignal_protocol::PublicKey::deserialize(&curve_bytes)
+            .expect("curve deserialize");
+        assert_eq!(curve_pk.serialize(), curve_bytes, "curve roundtrip");
+
+        let ky = kem::KeyPair::generate(kem::KeyType::Kyber1024, &mut rng);
+        let kyber_bytes = ky.public_key.serialize();
+        let kyber_pk = kem::PublicKey::deserialize(&kyber_bytes).expect("kyber deserialize");
+        assert_eq!(kyber_pk.serialize(), kyber_bytes, "kyber roundtrip");
     }
 }
