@@ -99,11 +99,21 @@ pub fn leave_updates_members_test() {  let fake_bus = process.new_subject()
     "hermes.presence.t3",
     envelope.Notice("Alice 加入了房间"),
   )) = process.receive(fake_bus, 1000)
+  // Join 还会广播成员名单快照（成员活水机制），先排空
+  let assert Ok(bus.Publish(
+    "hermes.presence.t3",
+    envelope.Members(["Alice"]),
+  )) = process.receive(fake_bus, 1000)
 
   process.send(hall, room.Leave("Alice"))
   let assert Ok(bus.Publish(
     "hermes.presence.t3",
     envelope.Notice("Alice 离开了房间"),
+  )) = process.receive(fake_bus, 1000)
+  // 退房还会广播成员名单快照（成员活水机制）
+  let assert Ok(bus.Publish(
+    "hermes.presence.t3",
+    envelope.Members([]),
   )) = process.receive(fake_bus, 1000)
 
   // Bob 入房时名单不应再包含已离开的 Alice
