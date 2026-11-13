@@ -9,6 +9,7 @@
 //! 密钥与明文永远不越过这条线。
 
 pub mod codec;
+pub mod crypto;
 pub mod idempotency;
 pub mod transport;
 

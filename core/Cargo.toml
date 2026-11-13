@@ -10,3 +10,12 @@ futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
+base64 = "0.22"
+rand = "0.9"
+
+# Signal Protocol 官方纯 Rust 实现（X3DH/PQXDH + 双棘轮）。AGPL-3.0。
+# 经本地 vendor 引入：cargo 直接 git fetch 会拉全量历史（数 GB），慢到趴窝；
+# 用 shallow clone 放在仓库外，按需重新 vendor：
+#   git clone --depth 1 https://github.com/signalapp/libsignal <路径>
+# crates.io 同名 crate（0.1.0）是社区旧 C 绑定封装，勿用。
+libsignal-protocol = { path = "D:/programs/vendor/libsignal/rust/protocol" }

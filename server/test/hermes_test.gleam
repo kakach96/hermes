@@ -9,6 +9,7 @@ import gleam/option
 import gleeunit
 import hermes/bus
 import hermes/envelope
+import hermes/registry
 import hermes/room
 
 pub fn main() {
@@ -59,8 +60,27 @@ pub fn msg_publishes_chat_envelope_test() {
   )) = process.receive(fake_bus, 1000)
 }
 
-pub fn leave_updates_members_test() {
-  let fake_bus = process.new_subject()
+pub fn registry_roundtrip_test() {
+  let name = process.new_name("registry_test")
+  let assert Ok(_) = registry.start(name)
+  let reg = process.named_subject(name)
+
+  // 无人登记 → 取不到
+  let assert Error(Nil) = registry.fetch(reg, "Nobody")
+
+  // 登记后可取；同名覆盖（每次连接都会重注册）
+  registry.register(reg, "Alice", "{\"k\":1}")
+  let assert Ok("{\"k\":1}") = registry.fetch(reg, "Alice")
+  registry.register(reg, "Alice", "{\"k\":2}")
+  let assert Ok("{\"k\":2}") = registry.fetch(reg, "Alice")
+
+  // 别人的注册包互不干扰
+  registry.register(reg, "Bob", "{\"k\":9}")
+  let assert Ok("{\"k\":2}") = registry.fetch(reg, "Alice")
+  let assert Ok("{\"k\":9}") = registry.fetch(reg, "Bob")
+}
+
+pub fn leave_updates_members_test() {  let fake_bus = process.new_subject()
   let room_name = process.new_name("test_room_leave")
   let assert Ok(_) =
     room.start(

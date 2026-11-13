@@ -11,8 +11,12 @@ use serde::{Deserialize, Serialize};
 pub enum ServerFrame {
     Joined { members: Vec<String> },
     Chat { from: String, text: String, dedup_id: String, seq: u64 },
+    /// 发给本人的端到端密文（server 已按 to 过滤；base64 密文）
+    Enc { from: String, body: String, dedup_id: String, seq: u64 },
     Notice { text: String },
     Error { reason: String },
+    /// prekey_fetch 的回执；bundle 为空 = 对方无登记（不在线）
+    PrekeyBundle { for_name: String, bundle: String },
 }
 
 /// 客户端 → 服务端帧
@@ -22,6 +26,12 @@ pub enum ClientFrame {
     Join { name: String, cursor: u64 },
     Msg { text: String, dedup_id: String },
     Leave,
+    /// 登记 Signal 注册包（JSON 字符串，server 不透明存储）
+    PrekeyRegister { bundle: String },
+    /// 取某人的注册包
+    PrekeyFetch { for_name: String },
+    /// 端到端密文（发给某成员）
+    Enc { to: String, body: String, dedup_id: String },
 }
 
 impl ServerFrame {

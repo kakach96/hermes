@@ -17,17 +17,33 @@
 | type | 字段 | 语义 |
 | --- | --- | --- |
 | `join` | `name` `cursor` | 入房。cursor = 该设备最后收到的 stream seq（新设备传 0） |
-| `msg` | `text` `dedup_id` | 聊天。dedup_id 由客户端生成（幂等钥匙，QoS1 去重用） |
+| `msg` | `text` `dedup_id` | **legacy 明文**聊天（工具/测试用；GUI 走 enc） |
 | `leave` | — | 主动退房（会关连接） |
+| `prekey_register` | `bundle` | 登记 Signal 注册包（bundle 为 JSON 字符串，server 不透明存储，同名覆盖） |
+| `prekey_fetch` | `for` | 取某人的注册包 → 回 `prekey_bundle` 帧（空 bundle = 对方无登记） |
+| `enc` | `to` `body` `dedup_id` | 端到端密文：server 原样转发进房间流，只有 `to` 本人能解密 |
 
 ## 服务端 → 客户端（WS 文本帧）
 
 | type | 字段 | 语义 |
 | --- | --- | --- |
 | `joined` | `members: string[]` | 入房回执：当前成员名单（新成员在前） |
-| `chat` | `from` `text` `dedup_id` `seq` | 一条聊天；seq 用于推进本地游标 |
+| `chat` | `from` `text` `dedup_id` `seq` | 明文聊天（legacy）；seq 用于推进本地游标 |
+| `enc` | `from` `body` `dedup_id` `seq` | 发给本人的密文（server 已按 `to` 过滤） |
 | `notice` | `text` | presence（加入/离开/掉线）。**不重放** |
-| `error` | `reason` | 服务端拒绝（v0 仅 attach 失败等致命场景） |
+| `error` | `reason` | 服务端拒绝 |
+| `prekey_bundle` | `for` `bundle` | prekey_fetch 的回执；空 bundle 表示对方不在线 |
+
+## 端到端加密（M6，pairwise）
+
+- 密码学全部在客户端 core 的 crypto 线程里（官方 libsignal 纯 Rust 实现，
+  X3DH/PQXDH + 双棘轮）；server 只做注册包目录与密文转发，**永远接触不到明文**
+- 建会话流程：入房后对名单里每个成员 `prekey_fetch` → `initiate_session`；
+  之后对该成员发消息走 `enc`。名单快照之外的晚到成员由发送方懒建会话补上
+- 游标对 `enc` 信封同样推进（重放时 server 仍按 `to` 过滤，幂等性由
+  客户端 Bloom dedup 兜底）
+- 明确的 v0 限制：群组不走 Sender Key（pairwise，房间大 = O(N) 副本）；
+  会话状态不落盘，客户端重启后无法解密重放窗口里的旧密文
 
 ## 游标语义（收件箱模型）
 

@@ -12,6 +12,9 @@ import gleam/json
 pub type Envelope {
   Chat(from: String, text: String, dedup_id: String)
   Notice(text: String)
+  /// 端到端加密消息：server 只做不透明转发，永远看不到明文。
+  /// to 是目标成员名；所有订阅者都会收到，只有 to 本人才解密处理。
+  Enc(to: String, from: String, body: String, dedup_id: String)
 }
 
 pub fn encode(envelope: Envelope) -> String {
@@ -27,6 +30,14 @@ pub fn encode(envelope: Envelope) -> String {
       json.object([
         #("type", json.string("notice")),
         #("text", json.string(text)),
+      ])
+    Enc(to, from, body, dedup_id) ->
+      json.object([
+        #("type", json.string("enc")),
+        #("to", json.string(to)),
+        #("from", json.string(from)),
+        #("body", json.string(body)),
+        #("dedup_id", json.string(dedup_id)),
       ])
   }
   |> json.to_string
@@ -54,6 +65,13 @@ fn decode_text(text: String) -> Result(Envelope, String) {
       "notice" -> {
         use text <- decode.field("text", decode.string)
         decode.success(Notice(text))
+      }
+      "enc" -> {
+        use to <- decode.field("to", decode.string)
+        use from <- decode.field("from", decode.string)
+        use body <- decode.field("body", decode.string)
+        use dedup_id <- decode.field("dedup_id", decode.string)
+        decode.success(Enc(to, from, body, dedup_id))
       }
       _ -> decode.failure(Chat("", "", ""), "unknown envelope type")
     }

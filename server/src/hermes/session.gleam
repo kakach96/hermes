@@ -23,6 +23,7 @@ import mist
 
 import hermes/bus
 import hermes/envelope
+import hermes/registry
 import hermes/room
 import hermes/store
 
@@ -31,6 +32,7 @@ pub type State {
     bus: Subject(bus.BusMsg),
     room: Subject(room.RoomMsg),
     store: store.Store,
+    registry: Subject(registry.RegistryMsg),
     room_subject: String,
     presence_subject: String,
     /// 入房身份；"" = 尚未入房
@@ -52,6 +54,12 @@ type ClientCmd {
   JoinMsg(name: String, cursor: Int)
   ChatMsg(text: String, dedup_id: String)
   LeaveMsg
+  /// 登记 Signal 注册包（bundle 是 JSON 字符串，server 不透明存储）
+  PrekeyRegisterMsg(bundle: String)
+  /// 取某人的注册包 → 回 prekey_bundle 帧（空 bundle = 对方无登记）
+  PrekeyFetchMsg(for_name: String)
+  /// 端到端密文：server 原样转发进房间流，只有 to 本人解密
+  EncMsg(to: String, body: String, dedup_id: String)
 }
 
 /// 把 HTTP 请求升级为 WebSocket 会话。
@@ -60,6 +68,7 @@ pub fn upgrade(
   bus: Subject(bus.BusMsg),
   room: Subject(room.RoomMsg),
   storage: store.Store,
+  registry: Subject(registry.RegistryMsg),
   room_subject: String,
   presence_subject: String,
 ) -> response.Response(mist.ResponseData) {
@@ -72,6 +81,7 @@ pub fn upgrade(
           bus: bus,
           room: room,
           store: storage,
+          registry: registry,
           room_subject: room_subject,
           presence_subject: presence_subject,
           name: "",
@@ -135,6 +145,34 @@ fn handle_text(state: State, text: String, conn: mist.WebsocketConnection) {
       let state = detach_all(state)
       room.leave(state.room, state.name)
       mist.stop()
+    }
+
+    Ok(PrekeyRegisterMsg(bundle)) -> {
+      case state.name {
+        "" -> Nil
+        name -> registry.register(state.registry, name, bundle)
+      }
+      mist.continue(state)
+    }
+
+    Ok(PrekeyFetchMsg(for_name)) -> {
+      // 没登记就回空 bundle，客户端会得到明确的"对方不在线"事件
+      let bundle = case registry.fetch(state.registry, for_name) {
+        Ok(b) -> b
+        Error(Nil) -> ""
+      }
+      let _ = mist.send_text_frame(conn, prekey_bundle_json(for_name, bundle))
+      mist.continue(state)
+    }
+
+    Ok(EncMsg(to, body, dedup_id)) -> {
+      case state.name {
+        "" -> mist.continue(state)
+        name -> {
+          room.send_enc(state.room, to, name, body, dedup_id)
+          mist.continue(state)
+        }
+      }
     }
   }
 }
@@ -229,12 +267,28 @@ fn close(state: State) -> Nil {
 // ---------- 服务端→客户端投递 ----------
 
 fn deliver(state: State, seq: Int, payload: BitArray, conn) {
+  // 游标推进对任何有效信封都生效（包括发别人的密文——重放时同样会被过滤）
+  let state = State(..state, cursor: int.max(state.cursor, seq))
   case envelope.decode_payload(payload) {
     Ok(envelope.Chat(from, text, dedup_id)) -> {
       let _ = mist.send_text_frame(conn, chat_json(seq, from, text, dedup_id))
       // 游标推进：高频低价值写入，fire-and-forget
       store.put_async(state.store, state.cursor_key, int.to_string(seq))
-      mist.continue(State(..state, cursor: int.max(state.cursor, seq)))
+      mist.continue(state)
+    }
+    // 端到端密文：只转发给收件人本人，server 永远看不到明文
+    Ok(envelope.Enc(to, from, body, dedup_id)) -> {
+      case to == state.name {
+        True -> {
+          let _ = mist.send_text_frame(
+            conn,
+            enc_json(seq, from, body, dedup_id),
+          )
+          store.put_async(state.store, state.cursor_key, int.to_string(seq))
+          mist.continue(state)
+        }
+        False -> mist.continue(state)
+      }
     }
     Ok(envelope.Notice(text)) -> {
       let _ = mist.send_text_frame(conn, notice_json(text))
@@ -266,6 +320,17 @@ fn chat_json(seq: Int, from: String, text: String, dedup_id: String) -> String {
   |> json.to_string
 }
 
+fn enc_json(seq: Int, from: String, body: String, dedup_id: String) -> String {
+  json.object([
+    #("type", json.string("enc")),
+    #("from", json.string(from)),
+    #("body", json.string(body)),
+    #("dedup_id", json.string(dedup_id)),
+    #("seq", json.int(seq)),
+  ])
+  |> json.to_string
+}
+
 fn notice_json(text: String) -> String {
   json.object([#("type", json.string("notice")), #("text", json.string(text))])
   |> json.to_string
@@ -273,6 +338,15 @@ fn notice_json(text: String) -> String {
 
 fn error_json(reason: String) -> String {
   json.object([#("type", json.string("error")), #("reason", json.string(reason))])
+  |> json.to_string
+}
+
+fn prekey_bundle_json(for_name: String, bundle: String) -> String {
+  json.object([
+    #("type", json.string("prekey_bundle")),
+    #("for", json.string(for_name)),
+    #("bundle", json.string(bundle)),
+  ])
   |> json.to_string
 }
 
@@ -293,6 +367,20 @@ fn decode_cmd(text: String) -> Result(ClientCmd, Nil) {
         decode.success(ChatMsg(text, dedup_id))
       }
       "leave" -> decode.success(LeaveMsg)
+      "prekey_register" -> {
+        use bundle <- decode.field("bundle", decode.string)
+        decode.success(PrekeyRegisterMsg(bundle))
+      }
+      "prekey_fetch" -> {
+        use for_name <- decode.field("for", decode.string)
+        decode.success(PrekeyFetchMsg(for_name))
+      }
+      "enc" -> {
+        use to <- decode.field("to", decode.string)
+        use body <- decode.field("body", decode.string)
+        use dedup_id <- decode.field("dedup_id", decode.string)
+        decode.success(EncMsg(to, body, dedup_id))
+      }
       _ -> decode.failure(LeaveMsg, "unknown client command")
     }
   }

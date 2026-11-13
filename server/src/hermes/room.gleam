@@ -22,6 +22,8 @@ pub type RoomMsg {
   Join(name: String, reply_to: Subject(List(String)))
   /// 聊天消息：发布到房间 subject，经 JetStream fanout 给所有会话
   Msg(from: String, text: String, dedup_id: String)
+  /// 端到端密文：对每个成员各一份，server 原样转发（不进来的看不懂）
+  Enc(to: String, from: String, body: String, dedup_id: String)
   /// 主动退房
   Leave(name: String)
 }
@@ -112,6 +114,16 @@ fn handle(state: State, msg: RoomMsg) -> actor.Next(State, RoomMsg) {
       actor.continue(state)
     }
 
+    Enc(to, from, body, dedup_id) -> {
+      bus.publish(state.bus, state.chat_subject, envelope.Enc(
+        to,
+        from,
+        body,
+        dedup_id,
+      ))
+      actor.continue(state)
+    }
+
     Leave(name) -> {
       let members = list.filter(state.members, fn(m) { m != name })
       bus.publish(state.bus, state.presence_subject, envelope.Notice(
@@ -157,6 +169,16 @@ pub fn send_message(
   dedup_id: String,
 ) -> Nil {
   process.send(room, Msg(from, text, dedup_id))
+}
+
+pub fn send_enc(
+  room: Subject(RoomMsg),
+  to: String,
+  from: String,
+  body: String,
+  dedup_id: String,
+) -> Nil {
+  process.send(room, Enc(to, from, body, dedup_id))
 }
 
 pub fn leave(room: Subject(RoomMsg), name: String) -> Nil {
