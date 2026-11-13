@@ -1,4 +1,4 @@
-# 赫尔墨斯计划 · 路线图与技术决策记录
+﻿# 赫尔墨斯计划 · 路线图与技术决策记录
 
 > 单一事实来源：项目处于哪个 Phase、每个 Phase 的验收标准、踩过的坑，都记在这里。
 > 本文件状态：Phase 1 已完成骨架，等待用户验证。
@@ -26,10 +26,11 @@
 | 客户端 | Rust 核心 + UniFFI | 一套核心逻辑喂 SwiftUI / Compose，视图层纯声明式 |
 | retained | 仅在线状态 | 聊天记录走存储层，不塞 retained，参考 MQTT 最佳实践 |
 
-## 冲刺模式（2026-11-11 策略变更）
+## 冲刺模式（2026-11-11 策略变更）—— ✅ v0 端到端闭环达成（2026-11-13）
 
 > 原策略：严格按 Phase 串行，每个模块打磨完再进下一个。
 > 新策略：**所有模块先各做一个 v0 版本，端到端跑通再回头加深。**
+> 结果：M1~M6 全部完成，三端 GUI 加密互聊实测通过。
 
 v0 端到端验收目标：两个 Tauri 客户端经 WebSocket 连 server，房间互聊，
 消息落 NATS JetStream 持久化，fjall 存历史，离线重连按设备游标补投，
@@ -42,7 +43,7 @@ core 内置 libsignal 会话（加密里程碑见 M6）。
 | M3 | server：最小 NATS 客户端（FFI）+ 会话 Actor + JetStream 离线补投 | ✅ 含 WS 会话，e2e 全绿（含跨重启历史重放） |
 | M4 | storage：fjall sidecar（Erlang port 行协议）+ server store 驱动 | ✅ 游标/成员名单持久化，sidecar 崩溃重启数据仍在，10 测试全绿 |
 | M5 | core + Tauri：WS 连接、游标补投、Bloom 幂等、双实例聊天 | ✅ GUI 单实例全链路实测通过（入房/补投/发送），node e2e 覆盖双实例 |
-| M6 | crypto：libsignal 会话建立 + 端到端密文 | ⬜ |
+| M6 | crypto：libsignal 会话建立 + 端到端密文 | ✅ 三端实测：加密互聊、名单活水、本地回显、游标补投 |
 
 v0 明确**不做**（留给第二轮）：树状 fanout、QUIC、UniFFI、iOS/Android 视图、
 ProVerif、RocksDB。任何文档冲突以本表为准。
