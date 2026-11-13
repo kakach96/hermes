@@ -8,7 +8,6 @@
 
 import gleam/erlang/process
 import gleam/io
-import gleam/option
 import gleam/otp/static_supervisor as supervisor
 import hermes/bus
 import hermes/registry
@@ -42,7 +41,6 @@ pub fn main() {
         "hermes.rooms.lobby",
         "hermes.presence.lobby",
         bus_subject,
-        option.Some(store_subject),
       ),
     )
     |> supervisor.add(

@@ -99,8 +99,16 @@ pub async fn connect(
                         }
                         ClientFrame::Msg { text, dedup_id } => {
                             if !joined { continue; }
+                            // 自己的消息本地即时回显（不经过加密自发自收——
+                            // 自会话是 Signal 里最拧巴的路径，v0 直接绕开）
+                            let _ = ev_tx.send(ClientEvent::Chat {
+                                from: me.clone(),
+                                text: text.clone(),
+                                dedup_id: dedup_id.clone(),
+                                seq: cursor,
+                            });
                             dispatch_outgoing(
-                                &text, &dedup_id, &members, &mut established,
+                                &text, &dedup_id, &members, &me, &mut established,
                                 &mut fetching, &mut pending, &crypto_tx, &mut sink,
                             )
                             .await;
@@ -250,6 +258,7 @@ async fn dispatch_outgoing(
     text: &str,
     dedup_id: &str,
     members: &[String],
+    me: &str,
     established: &mut HashSet<String>,
     fetching: &mut HashSet<String>,
     pending: &mut HashMap<String, Vec<(String, String)>>,
@@ -258,6 +267,9 @@ async fn dispatch_outgoing(
 ) {
     for peer in members {
         let peer = peer.clone();
+        if peer == me {
+            continue; // 自己的消息不走加密分发（本地已回显）
+        }
         if established.contains(&peer) {
             let _ = crypto_tx.send(CryptoCmd::Encrypt {
                 peer,

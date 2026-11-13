@@ -7,15 +7,12 @@
 
 import gleam/dynamic/decode
 import gleam/erlang/process.{type Name, type Subject}
-import gleam/json
 import gleam/list
-import gleam/option.{type Option}
 import gleam/otp/actor
 import gleam/otp/supervision
 
 import hermes/bus
 import hermes/envelope
-import hermes/store
 
 pub type RoomMsg {
   /// 入房：同步 call，回执当前成员名单（新成员在前）
@@ -34,8 +31,6 @@ type State {
     chat_subject: String,
     presence_subject: String,
     bus: Subject(bus.BusMsg),
-    /// v0 的状态外置：成员名单持久化到 fjall sidecar（测试传 None 跳过）
-    storage: Option(store.Store),
   )
 }
 
@@ -44,10 +39,9 @@ pub fn supervised(
   chat_subject: String,
   presence_subject: String,
   bus: Subject(bus.BusMsg),
-  storage: Option(store.Store),
 ) -> supervision.ChildSpecification(process.Subject(RoomMsg)) {
   supervision.worker(fn() {
-    start(name, chat_subject, presence_subject, bus, storage)
+    start(name, chat_subject, presence_subject, bus)
   })
 }
 
@@ -56,37 +50,13 @@ pub fn start(
   chat_subject: String,
   presence_subject: String,
   bus: Subject(bus.BusMsg),
-  storage: Option(store.Store),
 ) -> actor.StartResult(process.Subject(RoomMsg)) {
-  actor.new_with_initialiser(5000, fn(subject) {
-    // 成员名单从 sidecar 恢复 —— 房间崩了重启不再变幽灵房
-    let members = case storage {
-      option.Some(s) ->
-        case store.get(s, members_key(chat_subject)) {
-          Ok(option.Some(text)) ->
-            case json.parse(from: text, using: decode.list(decode.string)) {
-              Ok(list) -> list
-              Error(_) -> []
-            }
-          _ -> []
-        }
-      option.None -> []
-    }
-
-    let selector = process.new_selector() |> process.select(subject)
-    let initialised =
-      actor.initialised(State(
-        members: members,
-        chat_subject: chat_subject,
-        presence_subject: presence_subject,
-        bus: bus,
-        storage: storage,
-      ))
-      |> actor.selecting(selector)
-      |> actor.returning(subject)
-
-    Ok(initialised)
-  })
+  actor.new(State(
+    members: [],
+    chat_subject: chat_subject,
+    presence_subject: presence_subject,
+    bus: bus,
+  ))
   |> actor.named(name)
   |> actor.on_message(handle)
   |> actor.start
@@ -95,7 +65,9 @@ pub fn start(
 fn handle(state: State, msg: RoomMsg) -> actor.Next(State, RoomMsg) {
   case msg {
     Join(name, reply_to) -> {
-      let members = [name, ..state.members]
+      // 重进房间 = 移到队首（去重）；名册是活水，不 persist
+      let others = list.filter(state.members, fn(m) { m != name })
+      let members = [name, ..others]
       // presence 走非持久订阅，不进 JetStream（重放时不会收到陈旧通知）
       bus.publish(state.bus, state.presence_subject, envelope.Notice(
         name <> " 加入了房间",
@@ -105,7 +77,6 @@ fn handle(state: State, msg: RoomMsg) -> actor.Next(State, RoomMsg) {
       bus.publish(state.bus, state.presence_subject, envelope.Members(
         members,
       ))
-      persist(state, members)
       process.send(reply_to, members)
       actor.continue(State(..state, members: members))
     }
@@ -137,26 +108,9 @@ fn handle(state: State, msg: RoomMsg) -> actor.Next(State, RoomMsg) {
       bus.publish(state.bus, state.presence_subject, envelope.Members(
         members,
       ))
-      persist(state, members)
       actor.continue(State(..state, members: members))
     }
   }
-}
-
-fn persist(state: State, members: List(String)) -> Nil {
-  case state.storage {
-    option.Some(s) ->
-      store.put_async(
-        s,
-        members_key(state.chat_subject),
-        json.array(members, json.string) |> json.to_string,
-      )
-    option.None -> Nil
-  }
-}
-
-fn members_key(chat_subject: String) -> String {
-  "members:" <> chat_subject
 }
 
 // ---------- 客户端 API ----------
