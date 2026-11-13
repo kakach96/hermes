@@ -12,6 +12,8 @@ import gleam/json
 pub type Envelope {
   Chat(from: String, text: String, dedup_id: String)
   Notice(text: String)
+  /// 成员名单快照（走 presence 通道，不进流）：入房/退房时广播
+  Members(list: List(String))
   /// 端到端加密消息：server 只做不透明转发，永远看不到明文。
   /// to 是目标成员名；所有订阅者都会收到，只有 to 本人才解密处理。
   Enc(to: String, from: String, body: String, dedup_id: String)
@@ -30,6 +32,11 @@ pub fn encode(envelope: Envelope) -> String {
       json.object([
         #("type", json.string("notice")),
         #("text", json.string(text)),
+      ])
+    Members(list) ->
+      json.object([
+        #("type", json.string("members")),
+        #("members", json.array(list, json.string)),
       ])
     Enc(to, from, body, dedup_id) ->
       json.object([
@@ -65,6 +72,10 @@ fn decode_text(text: String) -> Result(Envelope, String) {
       "notice" -> {
         use text <- decode.field("text", decode.string)
         decode.success(Notice(text))
+      }
+      "members" -> {
+        use members <- decode.field("members", decode.list(decode.string))
+        decode.success(Members(members))
       }
       "enc" -> {
         use to <- decode.field("to", decode.string)

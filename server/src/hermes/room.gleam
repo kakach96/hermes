@@ -100,6 +100,11 @@ fn handle(state: State, msg: RoomMsg) -> actor.Next(State, RoomMsg) {
       bus.publish(state.bus, state.presence_subject, envelope.Notice(
         name <> " 加入了房间",
       ))
+      // 成员名单快照广播：后来者加入时，先来者的名单也要更新（否则
+      // 先来者发消息只会发给入房时刻的成员 —— 名单漂移的坑）
+      bus.publish(state.bus, state.presence_subject, envelope.Members(
+        members,
+      ))
       persist(state, members)
       process.send(reply_to, members)
       actor.continue(State(..state, members: members))
@@ -128,6 +133,9 @@ fn handle(state: State, msg: RoomMsg) -> actor.Next(State, RoomMsg) {
       let members = list.filter(state.members, fn(m) { m != name })
       bus.publish(state.bus, state.presence_subject, envelope.Notice(
         name <> " 离开了房间",
+      ))
+      bus.publish(state.bus, state.presence_subject, envelope.Members(
+        members,
       ))
       persist(state, members)
       actor.continue(State(..state, members: members))

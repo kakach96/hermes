@@ -15,6 +15,8 @@ pub enum ServerFrame {
     Enc { from: String, body: String, dedup_id: String, seq: u64 },
     Notice { text: String },
     Error { reason: String },
+    /// 成员名单快照（presence 通道广播，加入/退房时更新）
+    Members { members: Vec<String> },
     /// prekey_fetch 的回执；bundle 为空 = 对方无登记（不在线）
     PrekeyBundle {
         #[serde(rename = "for")]

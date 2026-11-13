@@ -294,6 +294,11 @@ fn deliver(state: State, seq: Int, payload: BitArray, conn) {
       let _ = mist.send_text_frame(conn, notice_json(text))
       mist.continue(state)
     }
+    // 成员名单快照：转发给客户端（core 用它更新加密目标名单）
+    Ok(envelope.Members(members)) -> {
+      let _ = mist.send_text_frame(conn, members_json(members))
+      mist.continue(state)
+    }
     // 坏帧/控制帧：丢弃（presence 走 core 订阅 seq=0，不更新游标）
     Error(_) -> mist.continue(state)
   }
@@ -333,6 +338,14 @@ fn enc_json(seq: Int, from: String, body: String, dedup_id: String) -> String {
 
 fn notice_json(text: String) -> String {
   json.object([#("type", json.string("notice")), #("text", json.string(text))])
+  |> json.to_string
+}
+
+fn members_json(members: List(String)) -> String {
+  json.object([
+    #("type", json.string("members")),
+    #("members", json.array(members, json.string)),
+  ])
   |> json.to_string
 }
 

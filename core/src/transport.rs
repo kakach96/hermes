@@ -226,6 +226,10 @@ pub async fn connect(
                             });
                             let _ = from;
                         }
+                        ServerFrame::Members { members: list } => {
+                            // 名单活水：加入/退房时更新加密目标集合
+                            members = list;
+                        }
                         ServerFrame::Notice { text } => {
                             let _ = ev_tx.send(ClientEvent::Notice { text });
                         }
