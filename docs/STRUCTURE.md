@@ -81,6 +81,9 @@ hermes/                             # 仓库根 = monorepo 根
 │   ├── nats-server.exe             #   官方单二进制（tag 锁死），本机起 NATS 用
 │   └── nats.conf                   #   JetStream file storage 配置
 │
+├── scripts/                        # [冲刺] 一键起停：hermes.cmd up|client|down|status
+│   └── hermes.ps1                  #   端口探测防重复拉起；进程经 WMI 脱离父进程
+│
 └── tools/
     ├── codegen/                    # [Phase 4] proto → prost（server 端方案待定）
     ├── bench/                      # [Phase 4+] 压测：模拟 N 客户端打 server
