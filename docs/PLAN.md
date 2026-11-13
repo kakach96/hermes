@@ -127,5 +127,6 @@ ProVerif、RocksDB。任何文档冲突以本表为准。
 | M5 | 【全局】`erlang:unique_integer` 是 per-VM 计数器：任何跨 VM 的唯一性场景（NATS subject、测试数据目录）都会撞号。实际撞了三次：consumer inbox 跨 VM 串消息（服务器实例间也会！）、request-reply 回执串线、测试数据目录跨运行残留 | 唯一性一律用 `unique_inbox`：每调用 48bit crypto 随机 + unique_integer 兜底；这条规则进 AGENTS 备忘 |
 | M5 | 双端多开不能用两个 `tauri dev`：第二个 dev 要覆盖 `target\debug\*.exe`，而第一个实例锁着该文件（os error 5） | release 构建一次后直接多开 exe；README 已写明 |
 | M6 | cargo 的 git 依赖会全量 fetch 仓库历史：signalapp/libsignal 这类多语言 monorepo（数 GB）在慢网络下假死（还叠加 package cache 锁互相等待） | 本地 shallow clone vendor 到仓库外（`git clone --depth 1`），Cargo.toml 用 path 依赖；crates.io 同名 `libsignal-protocol` 是社区旧 C 绑定（要 cmake），勿用 |
+| M6 | 【继上】失败的 cargo 运行会把 git 源写进 Cargo.lock；之后即使改成 path 依赖，cargo 解析时仍会尝试更新 lock 里的 git 源 → 继续假死 | 改源后删 Cargo.lock 重来；多进程 cargo + package cache 锁互等是"假死"的表象，用进程 CPU 时间（全 0）+ git fetch 进程判断卡的是网络不是编译 |
 | M6 | libsignal（官方 Rust）的 store 方法是 `async_trait(?Send)` → 返回 !Send future，进不了 `tokio::spawn` 的任务 | crypto 独立线程 + 每次调用 `now_or_never()` 同步驱动（这些 future 从不真正挂起，官方测试同款） |
 | M6 | libsignal 许可证 AGPL-3.0（强传染） | 自嗨项目无碍；若未来分发闭源客户端需替换实现或独立进程隔离 |
