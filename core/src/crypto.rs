@@ -70,6 +70,7 @@ pub enum CryptoCmd {
 }
 
 /// crypto 线程回吐的事件（WS 会话任务消费）
+#[derive(Debug)]
 pub enum CryptoEvent {
     Registered { bundle_json: String },
     Established { peer: String },
@@ -95,6 +96,11 @@ pub fn spawn() -> (CryptoCmdTx, CryptoEventRx) {
         .spawn(move || {
             let mut state: Option<Crypto> = None;
             while let Ok(cmd) = cmd_rx.recv() {
+                // Init 必须在 state 守卫之前处理：它就是用来创建 state 的
+                if let CryptoCmd::Init { name } = cmd {
+                    state = init(name, &ev_tx);
+                    continue;
+                }
                 let Some(crypto) = state.as_mut() else {
                     let _ = ev_tx.send(CryptoEvent::Failed {
                         context: "crypto".into(),
@@ -103,10 +109,6 @@ pub fn spawn() -> (CryptoCmdTx, CryptoEventRx) {
                     continue;
                 };
                 let event = match cmd {
-                    CryptoCmd::Init { .. } => CryptoEvent::Failed {
-                        context: "init".into(),
-                        detail: "重复初始化".into(),
-                    },
                     CryptoCmd::Establish { peer, bundle_json } =>
                         match establish(crypto, &peer, &bundle_json) {
                             Ok(()) => CryptoEvent::Established { peer },
@@ -135,6 +137,8 @@ pub fn spawn() -> (CryptoCmdTx, CryptoEventRx) {
                                 detail: e.0,
                             },
                         },
+                    // Init 已在上面处理
+                    CryptoCmd::Init { .. } => unreachable!(),
                 };
                 let _ = ev_tx.send(event);
             }
@@ -274,15 +278,18 @@ fn encrypt(crypto: &mut Crypto, peer: &str, plaintext: &[u8]) -> Result<Vec<u8>,
 fn decrypt(crypto: &mut Crypto, peer: &str, body_b64: &str) -> Result<String, CryptoError> {
     let run = async {
         let bytes = b64d(body_b64);
-        // wire 首字节是消息类型标签（whisper=2 / prekey=3，见 CiphertextMessageType）
-        let msg = match bytes.first() {
-            Some(3) => CiphertextMessage::PreKeySignalMessage(PreKeySignalMessage::try_from(
-                bytes.as_slice(),
-            )?),
-            Some(2) => {
-                CiphertextMessage::SignalMessage(SignalMessage::try_from(bytes.as_slice())?)
-            }
-            other => return Err(CryptoError(format!("未知密文类型 {other:?}"))),
+        // 不按首字节魔数分派（新版本的版本打包字节会变），直接尝试解析：
+        // PreKey 消息（会话初建）优先，普通 Whisper 消息兜底
+        let msg = if let Ok(m) = PreKeySignalMessage::try_from(bytes.as_slice()) {
+            CiphertextMessage::PreKeySignalMessage(m)
+        } else if let Ok(m) = SignalMessage::try_from(bytes.as_slice()) {
+            CiphertextMessage::SignalMessage(m)
+        } else {
+            return Err(CryptoError(format!(
+                "未知密文，长度 {}，前字节 {:?}",
+                bytes.len(),
+                bytes.first()
+            )));
         };
         let peer_addr = ProtocolAddress::new(peer.to_string(), device_id()?);
         let plaintext = message_decrypt(
@@ -587,5 +594,62 @@ mod tests {
         let kyber_bytes = ky.public_key.serialize();
         let kyber_pk = kem::PublicKey::deserialize(&kyber_bytes).expect("kyber deserialize");
         assert_eq!(kyber_pk.serialize(), kyber_bytes, "kyber roundtrip");
+    }
+
+    /// 线程级集成：两个 crypto 线程实例经命令/事件通道完成
+    /// 注册 → 建会话 → 加密 → 解密。守护"Init 被守卫吞掉"一类的回归。
+    #[test]
+    fn crypto_thread_lifecycle() {
+        let (alice_tx, mut alice_ev) = spawn();
+        let (bob_tx, mut bob_ev) = spawn();
+
+        alice_tx.send(CryptoCmd::Init { name: "Alice".into() }).unwrap();
+        let registered = alice_ev.blocking_recv().expect("registered event");
+        let CryptoEvent::Registered { bundle_json } = registered else {
+            panic!("expected Registered, got {registered:?}");
+        };
+
+        bob_tx.send(CryptoCmd::Init { name: "Bob".into() }).unwrap();
+        let CryptoEvent::Registered { bundle_json: bob_bundle_json } =
+            bob_ev.blocking_recv().unwrap()
+        else {
+            panic!("bob expected Registered");
+        };
+
+        // Alice 用 **Bob 的** 注册包建会话（不是自己的！）
+        alice_tx
+            .send(CryptoCmd::Establish {
+                peer: "Bob".into(),
+                bundle_json: bob_bundle_json,
+            })
+            .unwrap();
+        let CryptoEvent::Established { peer } = alice_ev.blocking_recv().unwrap() else {
+            panic!("alice expected Established");
+        };
+        assert_eq!(peer, "Bob");
+
+        // 加密 → 解密
+        alice_tx
+            .send(CryptoCmd::Encrypt {
+                peer: "Bob".into(),
+                dedup_id: "t1".into(),
+                plaintext: b"thread-level".to_vec(),
+            })
+            .unwrap();
+        let CryptoEvent::Encrypted { peer, body_b64, .. } = alice_ev.blocking_recv().unwrap()
+        else {
+            panic!("alice expected Encrypted");
+        };
+        assert_eq!(peer, "Bob");
+
+        bob_tx
+            .send(CryptoCmd::Decrypt { peer: "Alice".into(), body_b64 })
+            .unwrap();
+        let ev = bob_ev.blocking_recv().unwrap();
+        let CryptoEvent::Decrypted { peer, text } = ev else {
+            panic!("bob expected Decrypted, got {ev:?}");
+        };
+        assert_eq!(peer, "Alice");
+        assert_eq!(text, "thread-level");
     }
 }
