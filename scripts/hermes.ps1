@@ -13,7 +13,8 @@ param([string]$cmd = "up")
 $Root = Split-Path -Parent $PSScriptRoot
 
 # 本机工具链（不在 PATH 时兜底；路径来自 AGENTS.md 记录的本机布局）
-$env:Path = "D:\programs\gleam;D:\programs\Erlang\bin;D:\programs\rebar3;$env:USERPROFILE\.cargo\bin;$env:Path"
+$env:Path = "D:\programs\gleam;D:\programs\Erlang\bin;D:\programs\rebar3;D:\programs\protoc\bin;$env:USERPROFILE\.cargo\bin;$env:Path"
+$env:PROTOC = "D:\programs\protoc\bin\protoc.exe"
 
 function Test-Port([int]$port) {
     $c = New-Object System.Net.Sockets.TcpClient
