@@ -18,8 +18,8 @@
       <input id="url" class="field" spellcheck="false" value="ws://127.0.0.1:8080/ws" />
       <input id="name" class="field" spellcheck="false" placeholder="你的名字" autofocus />
       <div class="field-row">
-        <input id="space" class="field" spellcheck="false" value="lobby" placeholder="空间" list="space-list" />
-        <input id="channel" class="field" spellcheck="false" value="general" placeholder="频道" list="channel-list" />
+        <input id="space" class="field" spellcheck="false" value="" placeholder="空间（缺省 lobby）" list="space-list" />
+        <input id="channel" class="field" spellcheck="false" value="" placeholder="频道（缺省 general）" list="channel-list" />
       </div>
       <datalist id="space-list"></datalist>
       <datalist id="channel-list"></datalist>
@@ -39,9 +39,10 @@
     <header>
       <span class="mark">hermes</span>
       <span id="presence-dot" class="pulse"></span>
-      <span id="room-tag" class="tag">lobby</span>
+      <span id="room-tag" class="tag">lobby/general</span>
       <span class="spacer"></span>
       <span id="me" class="me"></span>
+      <button id="leave" class="leave-btn" title="退出房间（消息与游标都会被记住）">退出</button>
     </header>
 
     <main id="log"></main>

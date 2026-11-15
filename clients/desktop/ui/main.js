@@ -9,6 +9,14 @@ const log = $("log");
 let lastSeq = 0;
 let connected = false;
 let myName = "";
+let leaving = false;
+
+function backToJoin() {
+  $("chat").classList.add("hidden");
+  $("join").classList.remove("hidden");
+  $("name").value = myName;
+  $("name").focus();
+}
 
 // ---------- 主题 ----------
 
@@ -110,13 +118,14 @@ function handle(ev) {
       connected = false;
       $("input").disabled = true;
       $("send").disabled = true;
+      if (leaving) {
+        // 主动退出：安静回退到入房卡片（游标与消息都已记住）
+        leaving = false;
+        backToJoin();
+        break;
+      }
       addLine("err", "连接断开 —— 消息已按游标记住，重新进入即可补上");
-      setTimeout(() => {
-        $("chat").classList.add("hidden");
-        $("join").classList.remove("hidden");
-        $("name").value = myName;
-        $("name").focus();
-      }, 1200);
+      setTimeout(backToJoin, 1200);
       break;
     // 空间/频道元数据事件：渲染 + 填充 datalist 建议
   case "space_list": {
@@ -233,6 +242,17 @@ function sendCurrent() {
   invoke("send_message", { text });
   $("input").value = "";
 }
+
+// 退出房间：主动走 leave 帧（server 会清名册），游标两边都记着，
+// 重进（哪怕换空间/频道）都不丢消息
+$("leave").onclick = () => {
+  if (!connected) return;
+  leaving = true;
+  invoke("disconnect").catch((e) => {
+    leaving = false;
+    addLine("err", "退出失败: " + e);
+  });
+};
 
 $("send").onclick = sendCurrent;
 $("input").addEventListener("keydown", (e) => {

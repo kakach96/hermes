@@ -100,14 +100,21 @@ fn handle(state: State, msg: RoomMsg) -> actor.Next(State, RoomMsg) {
     }
 
     Leave(name) -> {
-      let members = list.filter(state.members, fn(m) { m != name })
-      bus.publish(state.bus, state.presence_subject, envelope.Notice(
-        name <> " 离开了房间",
-      ))
-      bus.publish(state.bus, state.presence_subject, envelope.Members(
-        members,
-      ))
-      actor.continue(State(..state, members: members))
+      // 幂等：LeaveMsg 主动退房 + mist.stop 触发 close 会各投一次 Leave。
+      // 不在名册 = 已经退过，直接 no-op（否则离开通知广播两遍）
+      case list.contains(state.members, name) {
+        False -> actor.continue(state)
+        True -> {
+          let members = list.filter(state.members, fn(m) { m != name })
+          bus.publish(state.bus, state.presence_subject, envelope.Notice(
+            name <> " 离开了房间",
+          ))
+          bus.publish(state.bus, state.presence_subject, envelope.Members(
+            members,
+          ))
+          actor.continue(State(..state, members: members))
+        }
+      }
     }
   }
 }

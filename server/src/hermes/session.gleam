@@ -321,6 +321,16 @@ fn join(
   channel: String,
   conn,
 ) {
+  // 空串归一化：其他客户端显式发空 space/channel 时回落 wire 缺省
+  // （GUI 的 core 传输层已做同样归一化，这里是对裸 WS 客户端的兜底）
+  let space = case space {
+    "" -> meta.default_space
+    _ -> space
+  }
+  let channel = case channel {
+    "" -> meta.default_channel
+    _ -> channel
+  }
   // 空间/频道名过 subject-token 校验（NATS 路由注入防线）；
   // 用户名走宽松规则（不进 subject，中文/大写合法）
   case
