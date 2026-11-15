@@ -195,7 +195,9 @@ function handle(ev) {
       $("user-btn").textContent = ev.name;
       showHome();
       break;
-    case "spaces":
+    case "space_list":
+      // 注意事件名：core 的 ClientEvent::SpaceList 序列化为 space_list，
+      // 与 server wire 帧（spaces）不同名 —— 别混
       renderSpaces(ev.spaces);
       break;
     case "channel_list":

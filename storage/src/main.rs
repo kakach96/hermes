@@ -31,10 +31,33 @@ use std::collections::HashMap;
 const PARTITIONS: [&str; 6] = ["kv", "users", "spaces", "channels", "members", "perms"];
 
 fn main() {
-    let dir = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "./storage-data".into());
+    let mut args = std::env::args().skip(1);
+    let dir = args.next().unwrap_or_else(|| "./storage-data".into());
 
+    // 运维模式：--cleanup <逗号分隔前缀> —— 删掉元数据域里 key 以这些
+    // 前缀开头的记录（e2e 测试残留清理）。必须先停 server（fjall 独占）。
+    if dir == "--cleanup" {
+        let prefixes: Vec<String> = args
+            .next()
+            .unwrap_or_default()
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if prefixes.is_empty() {
+            eprintln!("用法: hermes-storage.exe --cleanup <前缀1,前缀2,...> [数据目录]");
+            std::process::exit(1);
+        }
+        let real_dir = args.next().unwrap_or_else(|| "./storage-data".into());
+        let total = cleanup(&real_dir, &prefixes);
+        println!("cleanup done: {total} keys removed");
+        return;
+    }
+
+    run_server(dir);
+}
+
+fn run_server(dir: String) {
     let keyspace = match fjall::Keyspace::open(fjall::Config::new(dir)) {
         Ok(ks) => ks,
         Err(e) => {
@@ -87,6 +110,49 @@ fn main() {
             break;
         }
     }
+}
+
+/// 元数据域清理：只动 spaces/channels/members/perms（users/kv 是真实账户
+/// 与游标，永不清）。返回删除总数。
+fn cleanup(dir: &str, prefixes: &[String]) -> usize {
+    let keyspace = match fjall::Keyspace::open(fjall::Config::new(dir)) {
+        Ok(ks) => ks,
+        Err(e) => {
+            eprintln!("open keyspace failed: {e}");
+            std::process::exit(1);
+        }
+    };
+    let mut total = 0;
+    for name in ["spaces", "channels", "members", "perms"] {
+        let part = match keyspace.open_partition(name, Default::default()) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("open partition {name} failed: {e}");
+                continue;
+            }
+        };
+        let doomed: Vec<Vec<u8>> = match part.iter().collect::<Result<Vec<_>, _>>() {
+            Ok(pairs) => pairs
+                .into_iter()
+                .map(|(k, _)| k.to_vec())
+                .filter(|k| {
+                    let key = String::from_utf8_lossy(k);
+                    prefixes.iter().any(|p| key.starts_with(p.as_str()))
+                })
+                .collect(),
+            Err(e) => {
+                eprintln!("scan partition {name} failed: {e}");
+                continue;
+            }
+        };
+        for key in &doomed {
+            if part.remove(key).is_ok() {
+                total += 1;
+            }
+        }
+        println!("  {name}: {} keys", doomed.len());
+    }
+    total
 }
 
 fn partition<'a>(
