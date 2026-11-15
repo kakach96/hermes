@@ -1,5 +1,8 @@
 //! hermes 桌面壳 —— 视图层零业务逻辑：业务全在 hermes-core，
 //! 这里只做"命令进、事件出"的桥。
+//!
+//! 三段式会话：connect（只建 WS）→ login（确定身份）→ join_room（入频道）。
+//! 大厅页的目录/建频道命令只要 login 过即可，不需要在房间里。
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -8,22 +11,23 @@ use std::sync::Mutex;
 use tauri::{Emitter, Manager, State};
 use hermes_core::Handle;
 
-struct AppState(Mutex<Option<Handle>>);
+struct Session {
+    handle: Handle,
+    name: String,
+}
 
-/// 连接 + 入房。之后所有服务端事件经 "hermes" 事件推给窗口。
+struct AppState(Mutex<Option<Session>>);
+
+/// 建立 WS 连接（不登录不进房）。之后所有服务端事件经 "hermes" 事件推给窗口。
 #[tauri::command]
 async fn connect(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     url: String,
-    name: String,
-    cursor: u64,
-    space: String,
-    channel: String,
 ) -> Result<(), String> {
     // 先断旧的（重复连接时）
     if let Some(old) = state.0.lock().unwrap().take() {
-        old.leave();
+        old.handle.logout();
     }
 
     // 身份密钥持久化目录：同一名 = 同一身份，跨重启会话不失效
@@ -35,8 +39,7 @@ async fn connect(
     std::fs::create_dir_all(&keys_dir).ok();
 
     let (handle, mut events) = hermes_core::connect(&url, &keys_dir).await?;
-    handle.join(name.clone(), cursor, space, channel);
-    *state.0.lock().unwrap() = Some(handle);
+    *state.0.lock().unwrap() = Some(Session { handle, name: String::new() });
 
     let emitter = app.clone();
     tokio::spawn(async move {
@@ -48,10 +51,59 @@ async fn connect(
 }
 
 #[tauri::command]
+fn login(state: State<'_, AppState>, name: String) -> Result<(), String> {
+    let mut guard = state.0.lock().unwrap();
+    match guard.as_mut() {
+        Some(s) => {
+            s.handle.login(name.clone());
+            s.name = name;
+            Ok(())
+        }
+        None => Err("未连接".into()),
+    }
+}
+
+#[tauri::command]
+fn join_room(
+    state: State<'_, AppState>,
+    cursor: u64,
+    space: String,
+    channel: String,
+) -> Result<(), String> {
+    let guard = state.0.lock().unwrap();
+    match guard.as_ref() {
+        Some(s) => {
+            s.handle.join(s.name.clone(), cursor, space, channel);
+            Ok(())
+        }
+        None => Err("未连接".into()),
+    }
+}
+
+#[tauri::command]
+fn leave_room(state: State<'_, AppState>) -> Result<(), String> {
+    match state.0.lock().unwrap().as_ref() {
+        Some(s) => {
+            s.handle.leave_room();
+            Ok(())
+        }
+        None => Err("未连接".into()),
+    }
+}
+
+/// 退出登录 = 真正断开 WS
+#[tauri::command]
+fn logout(state: State<'_, AppState>) {
+    if let Some(s) = state.0.lock().unwrap().take() {
+        s.handle.logout();
+    }
+}
+
+#[tauri::command]
 fn send_message(state: State<'_, AppState>, text: String) -> Result<(), String> {
     match state.0.lock().unwrap().as_ref() {
-        Some(handle) => {
-            handle.send_text(text);
+        Some(s) => {
+            s.handle.send_text(text);
             Ok(())
         }
         None => Err("未连接".into()),
@@ -63,8 +115,8 @@ fn send_message(state: State<'_, AppState>, text: String) -> Result<(), String> 
 #[tauri::command]
 fn create_space(state: State<'_, AppState>, space: String) -> Result<(), String> {
     match state.0.lock().unwrap().as_ref() {
-        Some(handle) => {
-            handle.create_space(space);
+        Some(s) => {
+            s.handle.create_space(space);
             Ok(())
         }
         None => Err("未连接".into()),
@@ -74,8 +126,8 @@ fn create_space(state: State<'_, AppState>, space: String) -> Result<(), String>
 #[tauri::command]
 fn list_spaces(state: State<'_, AppState>) -> Result<(), String> {
     match state.0.lock().unwrap().as_ref() {
-        Some(handle) => {
-            handle.list_spaces();
+        Some(s) => {
+            s.handle.list_spaces();
             Ok(())
         }
         None => Err("未连接".into()),
@@ -85,8 +137,8 @@ fn list_spaces(state: State<'_, AppState>) -> Result<(), String> {
 #[tauri::command]
 fn create_channel(state: State<'_, AppState>, space: String, channel: String) -> Result<(), String> {
     match state.0.lock().unwrap().as_ref() {
-        Some(handle) => {
-            handle.create_channel(space, channel);
+        Some(s) => {
+            s.handle.create_channel(space, channel);
             Ok(())
         }
         None => Err("未连接".into()),
@@ -96,18 +148,11 @@ fn create_channel(state: State<'_, AppState>, space: String, channel: String) ->
 #[tauri::command]
 fn list_channels(state: State<'_, AppState>, space: String) -> Result<(), String> {
     match state.0.lock().unwrap().as_ref() {
-        Some(handle) => {
-            handle.list_channels(space);
+        Some(s) => {
+            s.handle.list_channels(space);
             Ok(())
         }
         None => Err("未连接".into()),
-    }
-}
-
-#[tauri::command]
-fn disconnect(state: State<'_, AppState>) {
-    if let Some(handle) = state.0.lock().unwrap().take() {
-        handle.leave();
     }
 }
 
@@ -115,7 +160,8 @@ fn main() {
     tauri::Builder::default()
         .manage(AppState(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
-            connect, send_message, disconnect, create_space, list_spaces, create_channel, list_channels
+            connect, login, join_room, leave_room, logout, send_message,
+            create_space, list_spaces, create_channel, list_channels
         ])
         .run(tauri::generate_context!())
         .expect("hermes desktop 启动失败");

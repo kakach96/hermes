@@ -7,27 +7,21 @@
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <!-- 主题切换（入房视图；聊天视图里收进用户名菜单） -->
-  <div id="join" class="overlay">
+  <!-- ① 登录/注册 -->
+  <div id="auth" class="overlay">
     <button id="theme" class="theme-toggle" title="切换浅色/深色">☾</button>
     <div class="card">
       <div class="wordmark">hermes<span class="dot"></span></div>
       <div class="card-sub">beamed messages, no noise</div>
       <input id="url" class="field" spellcheck="false" value="ws://127.0.0.1:8080/ws" />
-      <input id="name" class="field" spellcheck="false" placeholder="你的名字" autofocus />
-      <div class="field-row">
-        <input id="space" class="field" spellcheck="false" value="" placeholder="空间（缺省 lobby）" list="space-list" />
-        <input id="channel" class="field" spellcheck="false" value="" placeholder="频道（缺省 general）" list="channel-list" />
-      </div>
-      <datalist id="space-list"></datalist>
-      <datalist id="channel-list"></datalist>
-      <button id="connect" class="btn">进入房间</button>
-      <div id="join-error" class="join-error"></div>
+      <input id="name" class="field" spellcheck="false" placeholder="你的名字（新名字 = 自动注册）" autofocus />
+      <button id="login" class="btn">登录 / 注册</button>
+      <div id="auth-error" class="join-error"></div>
     </div>
   </div>
 
-  <!-- 会话视图 -->
-  <div id="chat" class="chat hidden">
+  <!-- ②③ 登录后外壳：大厅 + 聊天共用头部与用户菜单 -->
+  <div id="main" class="hidden">
     <header>
       <div class="head-left">
         <span class="mark">hermes</span>
@@ -36,28 +30,45 @@
       </div>
       <span class="spacer"></span>
       <button id="user-btn" class="me-btn" title="账号菜单"></button>
-      <!-- 用户名弹窗：主题切换 + 退出（头部只留最有信息量的东西） -->
+      <!-- 用户名弹窗：主题切换 + 离开房间（聊天页） + 退出登录 -->
       <div id="user-menu" class="user-menu hidden">
         <button id="theme-item" class="menu-item">☾ 切换主题</button>
         <button id="leave-item" class="menu-item menu-danger">⏻ 退出房间</button>
+        <button id="logout-item" class="menu-item menu-danger">⏏ 退出登录</button>
       </div>
     </header>
 
-    <!-- 空间/频道管理行（已连接才有意义）；新空间/新频道的名字共用一个输入框 -->
-    <div id="manage" class="manage-row">
-      <button id="btn-space-list" class="mini">空间列表</button>
-      <button id="btn-channel-list" class="mini">本空间频道</button>
-      <input id="new-name" class="manage-in" spellcheck="false" placeholder="新空间/频道名" />
-      <button id="btn-space-create" class="mini">建空间</button>
-      <button id="btn-channel-create" class="mini">建频道</button>
+    <!-- ② 大厅：空间 / 频道 -->
+    <div id="home" class="hidden">
+      <div class="home-cols">
+        <section class="home-col">
+          <div class="home-head"><h2>空间</h2></div>
+          <div class="home-new">
+            <input id="new-space" class="home-in" spellcheck="false" placeholder="新空间名" />
+            <button id="btn-new-space" class="mini">建空间</button>
+          </div>
+          <ul id="space-list-ui" class="home-list"></ul>
+        </section>
+        <section class="home-col">
+          <div class="home-head"><h2 id="ch-title">频道 · 选一个空间</h2></div>
+          <div class="home-new">
+            <input id="new-channel" class="home-in" spellcheck="false" placeholder="新频道名" />
+            <button id="btn-new-channel" class="mini">建频道</button>
+          </div>
+          <ul id="channel-list-ui" class="home-list"></ul>
+        </section>
+      </div>
+      <div id="home-hint" class="home-hint"></div>
     </div>
 
-    <main id="log"></main>
-
-    <footer>
-      <input id="input" spellcheck="false" placeholder="说点什么…" disabled />
-      <button id="send" class="send" disabled>↩</button>
-    </footer>
+    <!-- ③ 聊天 -->
+    <div id="chat" class="hidden">
+      <main id="log"></main>
+      <footer>
+        <input id="input" spellcheck="false" placeholder="说点什么…" disabled />
+        <button id="send" class="send" disabled>↩</button>
+      </footer>
+    </div>
   </div>
 
   <script src="main.js"></script>

@@ -45,6 +45,7 @@ core 内置 libsignal 会话（加密里程碑见 M6）。
 | M5 | core + Tauri：WS 连接、游标补投、Bloom 幂等、双实例聊天 | ✅ GUI 单实例全链路实测通过（入房/补投/发送），node e2e 覆盖双实例 |
 | M6 | crypto：libsignal 会话建立 + 端到端密文 | ✅ 三端实测：加密互聊、名单活水、本地回显、游标补投 |
 | M7 | 空间/频道：fjall 多 keyspace 元数据（users/spaces/channels/members/perms）+ 动态房间管理器 | ✅ e2e 8 项全绿 + 旧 lobby 兼容回归通过 |
+| M7.5 | 登录/大厅三段式：login 帧与会话身份、leave 语义改为离房不断连、GUI 登录页 + 空间/频道大厅 | ✅ e2e_home 10 项全绿 + 全量回归 |
 
 v0 明确**不做**（留给第二轮）：树状 fanout、QUIC、UniFFI、iOS/Android 视图、
 ProVerif、RocksDB。任何文档冲突以本表为准。

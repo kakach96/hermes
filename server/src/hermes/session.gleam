@@ -60,8 +60,11 @@ pub type State {
 }
 
 type ClientCmd {
+  /// 登录：只确定身份（user_touch），不入房。大厅页的元数据操作靠它放行
+  LoginMsg(name: String)
   JoinMsg(name: String, cursor: Int, space: String, channel: String)
   ChatMsg(text: String, dedup_id: String)
+  /// 离开房间但**保持连接与登录态**（回大厅页）——与断开 WS 是两回事
   LeaveMsg
   /// 登记 Signal 注册包（bundle 是 JSON 字符串，server 不透明存储）
   PrekeyRegisterMsg(bundle: String)
@@ -142,11 +145,52 @@ fn handle_text(state: State, text: String, conn: mist.WebsocketConnection) {
       // 坏命令：v0 直接丢弃（M5 起回 error 帧让客户端感知）
       mist.continue(state)
     }
-    Ok(JoinMsg(name, cursor, space, channel)) -> {
+    Ok(LoginMsg(name)) -> {
       case state.name {
-        "" -> join(state, name, cursor, space, channel, conn)
-        // 重复 join：忽略（客户端 bug 或重放，幂等对待）
-        _ -> mist.continue(state)
+        // 重复登录同一身份：幂等回执
+        "" -> login(state, name, conn)
+        n if n == name -> {
+          let _ = mist.send_text_frame(conn, logged_in_json(n))
+          mist.continue(state)
+        }
+        n -> {
+          let _ = mist.send_text_frame(
+            conn,
+            error_json("本连接已登录为 " <> n <> "，如需换身份请重连"),
+          )
+          mist.continue(state)
+        }
+      }
+    }
+    Ok(JoinMsg(name, cursor, space, channel)) -> {
+      // 未登录直接 join（node e2e 工具的老路径）：隐式 login 兜底
+      case state.name {
+        "" ->
+          case meta.check_user(name) {
+            Error(reason) -> {
+              let _ = mist.send_text_frame(conn, error_json(reason))
+              mist.continue(state)
+            }
+            Ok(_) -> {
+              let _ = meta.user_touch(state.store, name)
+              join_room(State(..state, name: name), cursor, space, channel, conn)
+            }
+          }
+        // 已登录：帧里的 name 要么为空（GUI 不传），要么必须一致
+        n -> {
+          case name {
+            "" -> join_room(state, cursor, space, channel, conn)
+            other if other == n ->
+              join_room(state, cursor, space, channel, conn)
+            other -> {
+              let _ = mist.send_text_frame(
+                conn,
+                error_json("已登录为 " <> n <> "，不能以 " <> other <> " 入房"),
+              )
+              mist.continue(state)
+            }
+          }
+        }
       }
     }
     Ok(ChatMsg(text, dedup_id)) -> {
@@ -160,12 +204,10 @@ fn handle_text(state: State, text: String, conn: mist.WebsocketConnection) {
       }
     }
     Ok(LeaveMsg) -> {
-      let state = detach_all(state)
-      case state.room {
-        option.Some(room_actor) -> room.leave(room_actor, state.name)
-        option.None -> Nil
-      }
-      mist.stop()
+      // 离开房间 ≠ 断开：回大厅页后连接与登录态都保留
+      let state = leave_room(state)
+      let _ = mist.send_text_frame(conn, left_json())
+      mist.continue(state)
     }
 
     Ok(PrekeyRegisterMsg(bundle)) -> {
@@ -203,26 +245,31 @@ fn handle_text(state: State, text: String, conn: mist.WebsocketConnection) {
     }
 
     Ok(SpaceListMsg) -> {
-      let frame = case meta.space_list(state.store) {
-        Ok(pairs) ->
-          json.object([
-            #("type", json.string("spaces")),
-            #(
-              "spaces",
-              json.array(pairs, fn(pair) {
-                let #(name, owner) = pair
-                json.object([
-                  #("name", json.string(name)),
-                  #("owner", json.string(owner)),
-                ])
-              }),
-            ),
-          ])
-          |> json.to_string
-        Error(reason) -> error_json(reason)
+      case state.name {
+        "" -> mist.continue(state)
+        _ -> {
+          let frame = case meta.space_list(state.store) {
+            Ok(pairs) ->
+              json.object([
+                #("type", json.string("spaces")),
+                #(
+                  "spaces",
+                  json.array(pairs, fn(pair) {
+                    let #(name, owner) = pair
+                    json.object([
+                      #("name", json.string(name)),
+                      #("owner", json.string(owner)),
+                    ])
+                  }),
+                ),
+              ])
+              |> json.to_string
+            Error(reason) -> error_json(reason)
+          }
+          let _ = mist.send_text_frame(conn, frame)
+          mist.continue(state)
+        }
       }
-      let _ = mist.send_text_frame(conn, frame)
-      mist.continue(state)
     }
 
     Ok(ChannelCreateMsg(space, channel)) -> {
@@ -313,14 +360,18 @@ fn channel_create(
   }
 }
 
-fn join(
+fn join_room(
   state: State,
-  name: String,
   cursor: Int,
   space: String,
   channel: String,
   conn,
 ) {
+  // 已在房间里先退（大厅页换频道 = 直接点另一个频道进入）
+  let state = case state.room {
+    option.Some(_) -> leave_room(state)
+    option.None -> state
+  }
   // 空串归一化：其他客户端显式发空 space/channel 时回落 wire 缺省
   // （GUI 的 core 传输层已做同样归一化，这里是对裸 WS 客户端的兜底）
   let space = case space {
@@ -332,29 +383,27 @@ fn join(
     _ -> channel
   }
   // 空间/频道名过 subject-token 校验（NATS 路由注入防线）；
-  // 用户名走宽松规则（不进 subject，中文/大写合法）
+  // 用户名在 login 阶段已校验（宽松规则，不进 subject）
   case
-    meta.check_user(name)
-    |> result.try(fn(_) { meta.check_name(space) })
+    meta.check_name(space)
     |> result.try(fn(_) { meta.check_name(channel) })
   {
     Error(reason) -> {
       let _ = mist.send_text_frame(conn, error_json(reason))
       mist.continue(state)
     }
-    Ok(_) -> join_ok(state, name, cursor, space, channel, conn)
+    Ok(_) -> join_ok(state, cursor, space, channel, conn)
   }
 }
 
 fn join_ok(
   state: State,
-  name: String,
   cursor: Int,
   space: String,
   channel: String,
   conn,
 ) {
-  let _ = meta.user_touch(state.store, name)
+  let name = state.name
 
   // 开放模型（v0）：空间不存在则自动建档，首个进入者即 owner；
   // 频道不存在则自动建（join 即创建，显式建频道走 channel_create 帧才有权限门）
@@ -451,6 +500,45 @@ fn join_ok(
       }
     }
   }
+}
+
+/// 登录：确定身份并建档（幂等），不触碰任何房间状态。
+fn login(state: State, name: String, conn) {
+  case meta.check_user(name) {
+    Error(reason) -> {
+      let _ = mist.send_text_frame(conn, error_json(reason))
+      mist.continue(state)
+    }
+    Ok(_) ->
+      case meta.user_touch(state.store, name) {
+        Error(reason) -> {
+          let _ = mist.send_text_frame(conn, error_json(reason))
+          mist.continue(state)
+        }
+        Ok(Nil) -> {
+          let _ = mist.send_text_frame(conn, logged_in_json(name))
+          mist.continue(State(..state, name: name))
+        }
+      }
+  }
+}
+
+/// 离开房间：清订阅与房间关联，**保留登录态**（大厅还要用）。
+fn leave_room(state: State) -> State {  let state = detach_all(state)
+  case state.room {
+    option.Some(room_actor) -> room.leave(room_actor, state.name)
+    option.None -> Nil
+  }
+  State(
+    ..state,
+    space: "",
+    channel: "",
+    room_subject: "",
+    presence_subject: "",
+    room: option.None,
+    chat_token: "",
+    presence_token: "",
+  )
 }
 
 fn detach_all(state: State) -> State {
@@ -575,6 +663,15 @@ fn error_json(reason: String) -> String {
   |> json.to_string
 }
 
+fn logged_in_json(name: String) -> String {
+  json.object([#("type", json.string("logged_in")), #("name", json.string(name))])
+  |> json.to_string
+}
+
+fn left_json() -> String {
+  json.object([#("type", json.string("left"))]) |> json.to_string
+}
+
 fn space_created_json(space: String) -> String {
   json.object([#("type", json.string("space_created")), #("name", json.string(space))])
   |> json.to_string
@@ -604,8 +701,14 @@ fn decode_cmd(text: String) -> Result(ClientCmd, Nil) {
   let decoder = {
     use kind <- decode.field("type", decode.string)
     case kind {
-      "join" -> {
+      "login" -> {
         use name <- decode.field("name", decode.string)
+        decode.success(LoginMsg(name))
+      }
+      "join" -> {
+        // name 可选：登录后由 server 用会话身份（GUI 不传）；
+        // 裸工具直接 join 时带 name 走隐式登录
+        use name <- decode.optional_field("name", "", decode.string)
         use cursor <- decode.field("cursor", decode.int)
         // 空间/频道可选：缺省 lobby/general（e2e 工具与旧客户端零改动）
         use space <- decode.optional_field(

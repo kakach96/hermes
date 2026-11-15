@@ -17,12 +17,13 @@
 
 | type | 字段 | 语义 |
 | --- | --- | --- |
-| `join` | `name` `cursor` `space?` `channel?` | 入房。cursor = 该设备最后收到的 stream seq（新设备传 0）。space/channel 可选，缺省 `lobby`/`general`；不存在时自动建档（首个进入者 = 空间 owner） |
+| `join` | `name?` `cursor` `space?` `channel?` | 入房。cursor = 该设备最后收到的 stream seq（新设备传 0）。space/channel 可选，缺省 `lobby`/`general`；不存在时自动建档（首个进入者 = 空间 owner）。name 可选：GUI 登录后不传（用会话身份）；裸 WS 工具带 name 直接 join = 隐式登录兜底 |
 | `msg` | `text` `dedup_id` | **legacy 明文**聊天（工具/测试用；GUI 走 enc） |
-| `leave` | — | 主动退房（会关连接） |
+| `leave` | — | 离开房间回大厅。**不断开连接**，登录态保留；真正断开直接关 WS（server 靠连接关闭清理） |
 | `prekey_register` | `bundle` | 登记 Signal 注册包（bundle 为 JSON 字符串，server 不透明存储，同名覆盖） |
 | `prekey_fetch` | `for` | 取某人的注册包 → 回 `prekey_bundle` 帧（空 bundle = 对方无登记） |
 | `enc` | `to` `body` `dedup_id` | 端到端密文：server 原样转发进房间流，只有 `to` 本人能解密 |
+| `login` | `name` | 登录：确定身份并建档（幂等），**不入房**。`space_list`/`space_create`/`channel_create`/`channel_list` 只要求已登录（大厅页能力） |
 | `space_create` | `space` | 建空间（创建者 = owner）。需已入房（任意空间） |
 | `space_list` | — | 列全部空间 |
 | `channel_create` | `space` `channel` | 建频道。**需该空间 owner/admin**（v0 权限模型） |
@@ -39,6 +40,8 @@
 | `error` | `reason` | 服务端拒绝 |
 | `prekey_bundle` | `for` `bundle` | prekey_fetch 的回执；空 bundle 表示对方不在线 |
 | `members` | `members: string[]` | 成员名单快照（presence 通道广播，加入/退房时更新；加密目标名单的活水） |
+| `logged_in` | `name` | 登录成功（大厅页入场券） |
+| `left` | — | 已离开房间（连接保持） |
 | `spaces` | `spaces: [{name,owner}]` | 空间列表（space_list 的回执） |
 | `space_created` | `name` | 空间创建成功（创建者 = owner） |
 | `channels` | `space` `channels: string[]` | 某空间的频道列表（channel_list 的回执） |

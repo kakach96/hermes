@@ -1,5 +1,8 @@
 // hermes 桌面端视图逻辑 —— 零业务规则：
 // 命令 invoke 进 Rust（→ core），事件 "hermes" 回来只管渲染。
+//
+// 三段式视图：auth（登录/注册）→ home（大厅：空间/频道）→ chat（聊天）。
+// 离开房间回大厅不断连；退出登录才真正断开。
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -7,18 +10,12 @@ const { listen } = window.__TAURI__.event;
 const $ = (id) => document.getElementById(id);
 const log = $("log");
 let lastSeq = 0;
-let connected = false;
+let connected = false; // WS 活着（登录之后一直为 true，直到断线/退出登录）
+let inRoom = false;    // 当前在聊天室里
 let myName = "";
-let leaving = false;
-let currentSpace = "lobby";
-let currentChannel = "general";
-
-function backToJoin() {
-  $("chat").classList.add("hidden");
-  $("join").classList.remove("hidden");
-  $("name").value = myName;
-  $("name").focus();
-}
+let currentSpace = "";
+let currentChannel = "";
+let selectedSpace = ""; // 大厅里当前点开的空间
 
 // ---------- 主题 ----------
 
@@ -26,7 +23,6 @@ function backToJoin() {
 async function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;
   localStorage.setItem("hermes-theme", theme);
-  // 两处入口同步：入房卡片的固定按钮 + 聊天视图的用户菜单项
   const icon = theme === "light" ? "☾" : "☀";
   $("theme").textContent = icon;
   $("theme-item").textContent = `${icon} 切换主题`;
@@ -45,6 +41,39 @@ applyTheme(
 $("theme").onclick = () => {
   applyTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light");
 };
+
+// ---------- 视图切换 ----------
+
+function showAuth() {
+  $("main").classList.add("hidden");
+  $("auth").classList.remove("hidden");
+  $("name").focus();
+}
+
+function showHome() {
+  $("chat").classList.add("hidden");
+  $("home").classList.remove("hidden");
+  $("room-tag").classList.add("hidden");
+  $("leave-item").classList.add("hidden");
+  selectedSpace = "";
+  $("channel-list-ui").innerHTML = "";
+  $("ch-title").textContent = "频道 · 选一个空间";
+  invoke("list_spaces").catch(showHint);
+}
+
+function showChat() {
+  $("home").classList.add("hidden");
+  $("chat").classList.remove("hidden");
+  $("room-tag").classList.remove("hidden");
+  $("leave-item").classList.remove("hidden");
+  $("input").focus();
+}
+
+function showHint(text, isErr = false) {
+  const hint = $("home-hint");
+  hint.textContent = text;
+  hint.classList.toggle("err-text", isErr);
+}
 
 // ---------- 渲染 ----------
 
@@ -82,22 +111,147 @@ function escape(s) {
   return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 }
 
+// ---------- 大厅渲染 ----------
+
+function renderSpaces(spaces) {
+  const ul = $("space-list-ui");
+  ul.innerHTML = "";
+  for (const s of spaces || []) {
+    const li = document.createElement("li");
+    li.className = "home-item" + (s.name === selectedSpace ? " selected" : "");
+    li.innerHTML = `<span class="item-name"></span><span class="item-sub"></span>`;
+    li.querySelector(".item-name").textContent = s.name;
+    li.querySelector(".item-sub").textContent = "owner: " + s.owner;
+    li.onclick = () => {
+      selectedSpace = s.name;
+      $("ch-title").textContent = `频道 · ${s.name}`;
+      showHint("");
+      // 重渲染以刷新选中态，再拉该空间频道
+      renderSpaces(spaces);
+      invoke("list_channels", { space: s.name }).catch(showHint);
+    };
+    ul.appendChild(li);
+  }
+  if (!spaces || spaces.length === 0) {
+    const li = document.createElement("li");
+    li.className = "home-empty";
+    li.textContent = "还没有空间 —— 上面建一个";
+    ul.appendChild(li);
+  }
+}
+
+function renderChannels(space, channels) {
+  const ul = $("channel-list-ui");
+  ul.innerHTML = "";
+  $("ch-title").textContent = `频道 · ${space}`;
+  for (const c of channels || []) {
+    const li = document.createElement("li");
+    li.className = "home-item joinable";
+    li.innerHTML = `<span class="item-name"></span><button class="mini enter">进入</button>`;
+    li.querySelector(".item-name").textContent = "# " + c;
+    li.querySelector(".enter").onclick = () => enterChannel(space, c);
+    ul.appendChild(li);
+  }
+  if (!channels || channels.length === 0) {
+    const li = document.createElement("li");
+    li.className = "home-empty";
+    li.textContent = "这个空间还没有频道";
+    ul.appendChild(li);
+  }
+}
+
+function enterChannel(space, channel) {
+  // joined 帧不带空间/频道（server 不知道 UI 上下文），点击时就锁定；
+  // cursor 用设备记住的 lastSeq（全局 stream seq，跨频道也不丢消息）
+  currentSpace = space;
+  currentChannel = channel;
+  invoke("join_room", { cursor: lastSeq, space, channel }).catch(showHint);
+}
+
 // ---------- 事件桥 ----------
 
 async function startListen() {
   try {
     await listen("hermes", ({ payload: ev }) => {
-      // 诊断：标题栏显示最后收到的事件类型（桥活了没一眼可见）
       document.title = `hermes · ${ev.type}`;
       try {
         handle(ev);
       } catch (e) {
-        addLine("err", "渲染错误: " + e.message);
+        showHint("渲染错误: " + e.message, true);
       }
     });
   } catch (e) {
     showFatal("事件桥注册失败: " + (e?.message ?? String(e)));
   }
+}
+
+function handle(ev) {
+  switch (ev.type) {
+    case "logged_in":
+      myName = ev.name;
+      $("user-btn").textContent = ev.name;
+      showHome();
+      break;
+    case "spaces":
+      renderSpaces(ev.spaces);
+      break;
+    case "channel_list":
+      if (ev.space === selectedSpace) renderChannels(ev.space, ev.channels);
+      break;
+    case "space_created":
+      showHint(`空间已创建：${ev.name}（你是 owner）`);
+      selectedSpace = ev.name;
+      invoke("list_spaces").catch(() => {});
+      invoke("list_channels", { space: ev.name }).catch(() => {});
+      break;
+    case "channel_created":
+      // 建完直接进，顺滑
+      enterChannel(ev.space, ev.name);
+      break;
+    case "joined":
+      renderRoomTag((ev.members || []).length);
+      inRoom = true;
+      connected = true;
+      $("input").disabled = false;
+      $("send").disabled = false;
+      $("input").focus();
+      break;
+    case "members_changed":
+      renderRoomTag((ev.members || []).length);
+      break;
+    case "chat":
+      addRow(ev.from, ev.text, ev.from === myName);
+      if (ev.seq > lastSeq) lastSeq = ev.seq;
+      break;
+    case "notice":
+      if (inRoom) addLine("notice", ev.text);
+      break;
+    case "room_left":
+      inRoom = false;
+      $("input").disabled = true;
+      $("send").disabled = true;
+      showHome();
+      break;
+    case "error":
+      if (inRoom) addLine("err", ev.reason);
+      else showHint(ev.reason, true);
+      break;
+    case "disconnected":
+      handleDisconnected();
+      break;
+    default:
+      showHint("未知事件: " + JSON.stringify(ev), true);
+  }
+}
+
+function handleDisconnected() {
+  const wasIn = connected;
+  connected = false;
+  inRoom = false;
+  $("input").disabled = true;
+  $("send").disabled = true;
+  showAuth();
+  if (wasIn) $("auth-error").textContent = "连接断开 —— 消息与游标都记着，重新登录即可";
 }
 
 function renderRoomTag(count) {
@@ -108,85 +262,8 @@ function renderRoomTag(count) {
   tag.title = text; // 截断时悬停看全名
 }
 
-function handle(ev) {
-  switch (ev.type) {
-    case "joined":
-      addLine("notice", `已进入房间 · ${(ev.members || []).length} 人在线`);
-      renderRoomTag((ev.members || []).length);
-      connected = true;
-      $("input").disabled = false;
-      $("send").disabled = false;
-      $("input").focus();
-      break;
-    case "members_changed":
-      // 名单活水：实时人数跟随 presence 快照，不再停在入房那一刻
-      renderRoomTag((ev.members || []).length);
-      break;
-    case "chat":
-      addRow(ev.from, ev.text, ev.from === myName);
-      if (ev.seq > lastSeq) lastSeq = ev.seq;
-      break;
-    case "notice":
-      addLine("notice", ev.text);
-      break;
-    case "error":
-      addLine("err", ev.reason);
-      break;
-    case "disconnected":
-      connected = false;
-      $("input").disabled = true;
-      $("send").disabled = true;
-      if (leaving) {
-        // 主动退出：安静回退到入房卡片（游标与消息都已记住）
-        leaving = false;
-        backToJoin();
-        break;
-      }
-      addLine("err", "连接断开 —— 消息已按游标记住，重新进入即可补上");
-      setTimeout(backToJoin, 1200);
-      break;
-    // 空间/频道元数据事件：渲染 + 填充 datalist 建议
-  case "space_list": {
-    const dl = $("space-list");
-    dl.innerHTML = "";
-    const names = (ev.spaces || []).map((s) => s.name);
-    for (const s of ev.spaces || []) {
-      const opt = document.createElement("option");
-      opt.value = s.name;
-      opt.label = "owner: " + s.owner;
-      dl.appendChild(opt);
-    }
-    addLine("notice", `空间 ${names.length} 个：${names.join(" · ") || "（空）"}`);
-    break;
-  }
-  case "space_created":
-    addLine("notice", `空间已创建：${ev.name}（你是 owner）`);
-    break;
-  case "channel_list": {
-    const dl = $("channel-list");
-    dl.innerHTML = "";
-    for (const c of ev.channels || []) {
-      const opt = document.createElement("option");
-      opt.value = c;
-      dl.appendChild(opt);
-    }
-    addLine("notice", `${ev.space} 的频道：${(ev.channels || []).join(" · ") || "（空）"}`);
-    break;
-  }
-  case "channel_created":
-    addLine("notice", `频道已创建：${ev.space}/${ev.name}`);
-    break;
-  default:
-      addLine("err", "未知事件: " + JSON.stringify(ev));
-  }
-}
-
 function showFatal(msg) {
-  $("join-error").textContent = msg;
-  const line = document.createElement("div");
-  line.className = "err";
-  line.textContent = msg;
-  document.body.appendChild(line);
+  $("auth-error").textContent = msg;
 }
 
 // JS 侧任何未捕获错误都要可见，不许静默
@@ -195,102 +272,70 @@ window.addEventListener("unhandledrejection", (e) => {
   showFatal("错误: " + (r?.message ?? String(r)));
 });
 window.addEventListener("error", (e) => {
-  showFatal("错误: " + (e.message ?? String(e)));
+  showFatal("错误: " + e.message);
 });
 
-// ---------- 交互 ----------
+// ---------- 登录 ----------
 
-$("connect").onclick = async () => {
+$("login").onclick = async () => {
   const url = $("url").value.trim();
   const name = $("name").value.trim();
   if (!url || !name) {
-    $("join-error").textContent = "地址和名字都要填";
+    $("auth-error").textContent = "地址和名字都要填";
     return;
   }
-  $("join-error").textContent = "";
-  $("connect").disabled = true;
-  // 日志先清再连：事件桥可能在 invoke 返回前就开始推帧
-  //（后清会把刚到的 joined/通知一起抹掉——第三窗口"消息凭空消失"的坑）
-  log.innerHTML = "";
-  // 空间/频道在点击时就锁定：joined 事件可能抢在 invoke 返回前到达
-  currentSpace = $("space").value.trim() || "lobby";
-  currentChannel = $("channel").value.trim() || "general";
+  $("auth-error").textContent = "";
+  $("login").disabled = true;
   try {
-    // cursor 用设备记住的 lastSeq（重连补投的钥匙）；
-    // 空间/频道随 join 下发（不存在则服务端自动建档，首进者即 owner）
-    await invoke("connect", {
-      url,
-      name,
-      cursor: lastSeq,
-      space: $("space").value.trim(),
-      channel: $("channel").value.trim(),
-    });
-    myName = name;
-    $("user-btn").textContent = name;
-    log.innerHTML = "";
-    $("join").classList.add("hidden");
-    $("chat").classList.remove("hidden");
-    $("user-btn").textContent = name;    // 3 秒内没等到 joined = 桥有问题，明确说出来而不是干等
-    setTimeout(() => {
-      if (!connected) {
-        addLine("err", "3 秒未收到入房回执 —— 检查 server 是否在跑");
-      }
-    }, 3000);
+    await invoke("connect", { url });
+    await invoke("login", { name });
+    // logged_in 事件负责切到大厅
   } catch (e) {
-    $("join-error").textContent = String(e).replace(/^"|"$/g, "");
+    $("auth-error").textContent = String(e).replace(/^"|"$/g, "");
   } finally {
-    $("connect").disabled = false;
+    $("login").disabled = false;
   }
 };
 
 $("name").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") $("connect").click();
+  if (e.key === "Enter") $("login").click();
 });
 
-// ---- 空间/频道管理（聊天视图内；结果走事件回流渲染到 log）----
-// 管理目标 = 当前所在空间；新名字共用 #new-name 输入框
-// （manage 行在 #chat 内，未入房不可见；再加 connected 双保险）
-$("btn-space-list").onclick = () => {
-  if (connected) invoke("list_spaces");
-};
-$("btn-channel-list").onclick = () => {
-  if (connected) invoke("list_channels", { space: currentSpace });
-};
-$("btn-space-create").onclick = () => {
-  if (!connected) return;
-  const name = $("new-name").value.trim();
+// ---------- 大厅操作 ----------
+
+$("btn-new-space").onclick = () => {
+  const name = $("new-space").value.trim();
   if (!name) return;
-  $("new-name").value = "";
-  invoke("create_space", { space: name });
+  $("new-space").value = "";
+  invoke("create_space", { space: name }).catch(showHint);
 };
-$("btn-channel-create").onclick = () => {
-  if (!connected) return;
-  const name = $("new-name").value.trim();
+$("btn-new-channel").onclick = () => {
+  if (!selectedSpace) {
+    showHint("先在左边选一个空间", true);
+    return;
+  }
+  const name = $("new-channel").value.trim();
   if (!name) return;
-  $("new-name").value = "";
-  invoke("create_channel", { space: currentSpace, channel: name });
+  $("new-channel").value = "";
+  invoke("create_channel", { space: selectedSpace, channel: name }).catch(showHint);
 };
+
+// ---------- 聊天操作 ----------
 
 function sendCurrent() {
   const text = $("input").value.trim();
-  if (!text || !connected) return;
+  if (!text || !inRoom) return;
   invoke("send_message", { text });
   $("input").value = "";
 }
 
-// 退出房间：主动走 leave 帧（server 会清名册），游标两边都记着，
-// 重进（哪怕换空间/频道）都不丢消息。入口在用户名弹窗里。
-$("leave-item").onclick = () => {
-  closeUserMenu();
-  if (!connected) return;
-  leaving = true;
-  invoke("disconnect").catch((e) => {
-    leaving = false;
-    addLine("err", "退出失败: " + e);
-  });
-};
+$("send").onclick = sendCurrent;
+$("input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") sendCurrent();
+});
 
-// ---- 用户名弹窗 ----
+// ---------- 用户菜单 ----------
+
 function closeUserMenu() {
   $("user-menu").classList.add("hidden");
 }
@@ -301,18 +346,23 @@ $("user-btn").onclick = (e) => {
 $("theme-item").onclick = () => {
   applyTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light");
 };
-// 点弹窗外任意处关闭
+$("leave-item").onclick = () => {
+  closeUserMenu();
+  if (!inRoom) return;
+  invoke("leave_room").catch((e) => addLine("err", "退出失败: " + e));
+  // room_left 事件负责回大厅
+};
+$("logout-item").onclick = () => {
+  closeUserMenu();
+  invoke("logout").catch(() => {});
+  // disconnected 事件负责回登录页
+};
 document.addEventListener("click", (e) => {
   if (!$("user-menu").classList.contains("hidden")) {
     const inMenu = $("user-menu").contains(e.target);
     const onBtn = $("user-btn").contains(e.target);
     if (!inMenu && !onBtn) closeUserMenu();
   }
-});
-
-$("send").onclick = sendCurrent;
-$("input").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") sendCurrent();
 });
 
 startListen();

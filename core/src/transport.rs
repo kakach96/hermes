@@ -29,14 +29,30 @@ pub struct Handle {
 }
 
 impl Handle {
+    /// 登录：确定身份（密钥/注册包随后就位），不进任何房间。
+    pub fn login(&self, name: String) {
+        let _ = self.cmd_tx.send(ClientFrame::Login { name });
+    }
+
     /// 入房。space/channel 传空串则用 wire 缺省（lobby/general）。
+    /// 须先 login（裸 WS 工具直接 join 时由 server 隐式登录兜底）。
     pub fn join(&self, name: String, cursor: u64, space: String, channel: String) {
         let space = if space.is_empty() { DEFAULT_SPACE.into() } else { space };
         let channel = if channel.is_empty() { DEFAULT_CHANNEL.into() } else { channel };
         let _ = self.cmd_tx.send(ClientFrame::Join { name, cursor, space, channel });
     }
 
-    /// 建空间（创建者 = owner）。需已入房（server 端校验）。
+    /// 离开房间，保持连接与登录态（回大厅）。
+    pub fn leave_room(&self) {
+        let _ = self.cmd_tx.send(ClientFrame::Leave);
+    }
+
+    /// 断开连接（退出登录）。
+    pub fn logout(&self) {
+        let _ = self.cmd_tx.send(ClientFrame::Logout);
+    }
+
+    /// 建空间（创建者 = owner）。需已登录（server 端校验）。
     pub fn create_space(&self, space: String) {
         let _ = self.cmd_tx.send(ClientFrame::SpaceCreate { space });
     }
@@ -100,15 +116,40 @@ pub async fn connect(
                 cmd = cmd_rx.recv() => {
                     let Some(frame) = cmd else { break };
                     match frame {
+                        // 真断开：不发帧，直接掉线（server 靠连接关闭清理）
+                        ClientFrame::Logout => break,
                         ClientFrame::Leave => {
-                            let _ = sink.send(Message::text(frame.to_json())).await;
-                            let _ = ev_tx.send(ClientEvent::Disconnected);
-                            break;
+                            // 离房不断连：回大厅，加密目标名单清空重建
+                            if joined {
+                                let _ = sink.send(Message::text(ClientFrame::Leave.to_json())).await;
+                                joined = false;
+                                members.clear();
+                                fetching.clear();
+                                pending.clear();
+                                let _ = ev_tx.send(ClientEvent::RoomLeft);
+                            }
+                        }
+                        ClientFrame::Login { name } => {
+                            me = name.clone();
+                            // crypto 初始化：加载/生成本名身份与 prekey 套件
+                            let _ = crypto_tx.send(CryptoCmd::Init { name });
+                            if sink
+                                .send(Message::text(ClientFrame::Login { name: me.clone() }.to_json()))
+                                .await
+                                .is_err()
+                            {
+                                let _ = ev_tx.send(ClientEvent::Disconnected);
+                                break;
+                            }
                         }
                         ClientFrame::Join { name, cursor: c, space, channel } => {
-                            // 先构造帧再移交 name，避免移动冲突
+                            // GUI 已 login（me 已定）；裸工具 join 即隐式登录
+                            if me.is_empty() {
+                                me = name.clone();
+                                let _ = crypto_tx.send(CryptoCmd::Init { name });
+                            }
                             let join_frame = ClientFrame::Join {
-                                name: name.clone(),
+                                name: me.clone(),
                                 cursor: c,
                                 space,
                                 channel,
@@ -116,9 +157,10 @@ pub async fn connect(
                             .to_json();
                             joined = true;
                             cursor = c;
-                            me = name.clone();
-                            // crypto 初始化：生成身份与 prekey 套件（带名字建地址）
-                            let _ = crypto_tx.send(CryptoCmd::Init { name });
+                            // 换房间：旧名单作废（joined 帧会重建）
+                            members.clear();
+                            fetching.clear();
+                            pending.clear();
                             if sink.send(Message::text(join_frame)).await.is_err() {
                                 let _ = ev_tx.send(ClientEvent::Disconnected);
                                 break;
@@ -267,6 +309,9 @@ pub async fn connect(
                             let _ = ev_tx.send(ClientEvent::MembersChanged {
                                 members: list,
                             });
+                        }
+                        ServerFrame::LoggedIn { name } => {
+                            let _ = ev_tx.send(ClientEvent::LoggedIn { name });
                         }
                         ServerFrame::Notice { text } => {
                             let _ = ev_tx.send(ClientEvent::Notice { text });

@@ -171,11 +171,104 @@ body {
 
 /* ---------- 会话 ---------- */
 
-.chat {
+/* 登录后外壳：大厅 + 聊天共用 */
+#main {
   display: flex;
   flex-direction: column;
   height: 100%;
 }
+#chat {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+/* 大厅：两栏空间/频道 */
+#home {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  padding: 24px 28px;
+  gap: 18px;
+}
+.home-cols {
+  display: flex;
+  gap: 40px;
+  align-items: flex-start;
+}
+.home-col {
+  flex: 1;
+  min-width: 0;
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.home-head h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.home-new {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.home-in {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-size: 13px;
+  padding: 6px 2px;
+}
+.home-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.home-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.home-item:hover { background: var(--border); }
+.home-item.selected { background: var(--border); }
+.home-item .item-name {
+  font-family: var(--mono);
+  font-size: 13px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.home-item .item-sub {
+  font-size: 11px;
+  color: var(--faint);
+}
+.home-item.joinable { cursor: default; }
+.home-empty {
+  font-size: 12px;
+  color: var(--faint);
+  padding: 9px 10px;
+}
+.home-hint {
+  min-height: 18px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.home-hint.err-text { color: var(--accent-ink); }
 
 header {
   display: flex;

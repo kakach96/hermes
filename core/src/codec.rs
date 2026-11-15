@@ -33,6 +33,8 @@ pub enum ServerFrame {
         for_name: String,
         bundle: String,
     },
+    /// 登录回执（大厅页的入场券）
+    LoggedIn { name: String },
     /// 空间列表（name/owner 对）
     Spaces { spaces: Vec<SpaceEntry> },
     SpaceCreated { name: String },
@@ -45,11 +47,16 @@ pub enum ServerFrame {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientFrame {
+    /// 登录：只确定身份（user_touch），不入房。大厅页的目录/建频道靠它放行
+    Login { name: String },
     /// space/channel 为空时 transport 填 wire 缺省（lobby/general）；
-    /// node e2e 工具不发这两个字段时由 server 端缺省兜底
+    /// node e2e 工具不发 login 直接 join 时由 server 隐式登录兜底
     Join { name: String, cursor: u64, space: String, channel: String },
     Msg { text: String, dedup_id: String },
+    /// 离开房间但保持连接（回大厅页）；Logout 才是真断开
     Leave,
+    /// 本地命令：关掉 WS（不发帧，server 靠连接关闭清理）
+    Logout,
     /// 登记 Signal 注册包（JSON 字符串，server 不透明存储）
     PrekeyRegister { bundle: String },
     /// 取某人的注册包（wire 字段名是 "for"，serde 需显式改名）
@@ -86,6 +93,10 @@ pub enum ClientEvent {
     Notice { text: String },
     Error { reason: String },
     Disconnected,
+    /// 登录成功（大厅页入场）
+    LoggedIn { name: String },
+    /// 已离开房间（保持连接）——视图层回大厅
+    RoomLeft,
     /// 在线名单变化（presence 快照活水）——视图层用它刷新实时人数
     MembersChanged { members: Vec<String> },
     /// 空间/频道目录（视图层管展示，core 不缓存）
