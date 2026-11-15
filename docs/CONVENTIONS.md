@@ -115,7 +115,11 @@
    `capabilities/default.json`——新增事件先查权限。
 3. 主题：颜色只用 CSS 变量 token（`--panel` / `--accent` 等）；
    暗色改动必须同步亮色（双主题 forever）。
-4. 多开走 release 构建（`hermes.cmd client`），**禁止两个 `tauri dev`**（文件锁 os error 5）。
+4. **CSS 花括号必须配平**：Chromium 的 nesting 解析器遇到孤立的 `}`
+   会**静默吞掉紧随其后的规则**（实测：一个多余 `}` 吃掉了 `.spacer`，
+   头部布局整个塌掉且无任何报错）。改 CSS 后在浏览器里确认目标规则
+   真的生效（`getComputedStyle`），别只看文件。
+5. 多开走 release 构建（`hermes.cmd client`），**禁止两个 `tauri dev`**（文件锁 os error 5）。
 
 ## 六、proto / tools / scripts
 
