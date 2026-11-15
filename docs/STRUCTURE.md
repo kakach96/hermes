@@ -49,7 +49,9 @@ hermes/                             # 仓库根 = monorepo 根
 │   │       ├── room.gleam          #   房间 Actor
 │   │       ├── session.gleam       #   [M3] 会话 Actor：WS 连接态 + 设备游标
 │   │       ├── bus.gleam           #   [M3] NATS JetStream 适配
-│   │       ├── store.gleam         #   [M4] hermes-store 的 Erlang port 驱动
+│   │       ├── store.gleam         #   [M4] hermes-storage 的 Erlang port 驱动
+│   │       ├── meta.gleam          #   [M7] 元数据域：空间/频道/成员/权限（fjall 多 partition）
+│   │       ├── rooms.gleam         #   [M7] 动态房间管理器：按 <space>.<channel> 惰性 spawn 房间
 │   │       ├── ws.gleam            #   [M3] mist WebSocket 监听
 │   │       └── fanout.gleam        #   (第二轮) 树状分发（Manifold 思路）
 │   └── test/
@@ -67,11 +69,11 @@ hermes/                             # 仓库根 = monorepo 根
 │   │   └── bindings/               #   (第二轮) UniFFI 导出（iOS/Android 才需要）
 │   └── tests/
 │
-├── storage/                        # [M4] fjall 存储引擎 sidecar（Rust crate hermes-store）
+├── storage/                        # [M4] fjall 存储引擎 sidecar（Rust crate hermes-storage）
 │   ├── Cargo.toml                  #   被server以Erlang port驱动，stdio 行协议（JSON），无网络端口
 │   └── src/
-│       ├── main.rs                 #   行协议循环：get/put/scan → stdout
-│       └── engine.rs               #   fjall 封装：key 空间、compaction 参数
+│       └── main.rs                 #   [M7] 行协议循环 + partition 白名单（kv/users/
+│                                   #       spaces/channels/members/perms）+ prefix 扫描
 │
 ├── clients/                        # [M5] 视图层：零业务逻辑
 │   ├── ios/                        #   (第二轮) SwiftUI，只渲染 + 调 core 的 FFI
@@ -149,6 +151,7 @@ clients/desktop ──path──► core ──WS/QUIC──► server ──►
 | M4 | `storage/src/`（fjall 引擎 + port 行协议）、`server/src/hermes/store.gleam` |
 | M5 | `core/src/{transport,codec,sync,idempotency}`、`clients/desktop/`（Tauri） |
 | M6 | `core/src/crypto`（libsignal） |
+| M7 | `server/src/hermes/{meta,rooms}.gleam`、storage 多 partition、proto 空间/频道帧 |
 | 第二轮 | 树状 fanout、QUIC、UniFFI、iOS/Android、ProVerif（`tools/proverif`）、RocksDB（如需） |
 
 ## 六、迁移记录（M1，2026-11-11 已执行）

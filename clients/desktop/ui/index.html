@@ -17,6 +17,18 @@
       <div class="card-sub">beamed messages, no noise</div>
       <input id="url" class="field" spellcheck="false" value="ws://127.0.0.1:8080/ws" />
       <input id="name" class="field" spellcheck="false" placeholder="你的名字" autofocus />
+      <div class="field-row">
+        <input id="space" class="field" spellcheck="false" value="lobby" placeholder="空间" list="space-list" />
+        <input id="channel" class="field" spellcheck="false" value="general" placeholder="频道" list="channel-list" />
+      </div>
+      <datalist id="space-list"></datalist>
+      <datalist id="channel-list"></datalist>
+      <div class="mini-row">
+        <button id="btn-space-list" class="mini">空间列表</button>
+        <button id="btn-space-create" class="mini">建空间</button>
+        <button id="btn-channel-list" class="mini">频道列表</button>
+        <button id="btn-channel-create" class="mini">建频道</button>
+      </div>
       <button id="connect" class="btn">进入房间</button>
       <div id="join-error" class="join-error"></div>
     </div>

@@ -18,6 +18,8 @@ async fn connect(
     url: String,
     name: String,
     cursor: u64,
+    space: String,
+    channel: String,
 ) -> Result<(), String> {
     // 先断旧的（重复连接时）
     if let Some(old) = state.0.lock().unwrap().take() {
@@ -33,7 +35,7 @@ async fn connect(
     std::fs::create_dir_all(&keys_dir).ok();
 
     let (handle, mut events) = hermes_core::connect(&url, &keys_dir).await?;
-    handle.join(name.clone(), cursor);
+    handle.join(name.clone(), cursor, space, channel);
     *state.0.lock().unwrap() = Some(handle);
 
     let emitter = app.clone();
@@ -56,6 +58,52 @@ fn send_message(state: State<'_, AppState>, text: String) -> Result<(), String> 
     }
 }
 
+// ---- 空间/频道管理（fire-and-forget；结果经事件回流渲染）----
+
+#[tauri::command]
+fn create_space(state: State<'_, AppState>, space: String) -> Result<(), String> {
+    match state.0.lock().unwrap().as_ref() {
+        Some(handle) => {
+            handle.create_space(space);
+            Ok(())
+        }
+        None => Err("未连接".into()),
+    }
+}
+
+#[tauri::command]
+fn list_spaces(state: State<'_, AppState>) -> Result<(), String> {
+    match state.0.lock().unwrap().as_ref() {
+        Some(handle) => {
+            handle.list_spaces();
+            Ok(())
+        }
+        None => Err("未连接".into()),
+    }
+}
+
+#[tauri::command]
+fn create_channel(state: State<'_, AppState>, space: String, channel: String) -> Result<(), String> {
+    match state.0.lock().unwrap().as_ref() {
+        Some(handle) => {
+            handle.create_channel(space, channel);
+            Ok(())
+        }
+        None => Err("未连接".into()),
+    }
+}
+
+#[tauri::command]
+fn list_channels(state: State<'_, AppState>, space: String) -> Result<(), String> {
+    match state.0.lock().unwrap().as_ref() {
+        Some(handle) => {
+            handle.list_channels(space);
+            Ok(())
+        }
+        None => Err("未连接".into()),
+    }
+}
+
 #[tauri::command]
 fn disconnect(state: State<'_, AppState>) {
     if let Some(handle) = state.0.lock().unwrap().take() {
@@ -66,7 +114,9 @@ fn disconnect(state: State<'_, AppState>) {
 fn main() {
     tauri::Builder::default()
         .manage(AppState(Mutex::new(None)))
-        .invoke_handler(tauri::generate_handler![connect, send_message, disconnect])
+        .invoke_handler(tauri::generate_handler![
+            connect, send_message, disconnect, create_space, list_spaces, create_channel, list_channels
+        ])
         .run(tauri::generate_context!())
         .expect("hermes desktop 启动失败");
 }

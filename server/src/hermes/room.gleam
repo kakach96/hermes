@@ -5,7 +5,6 @@
 //// 状态只剩一份成员名单，用于 join 回执和 presence 文案。
 //// 未来大房间树状分发时，只需把这里换成 fanout.gleam，bus 接口不变。
 
-import gleam/dynamic/decode
 import gleam/erlang/process.{type Name, type Subject}
 import gleam/list
 import gleam/otp/actor

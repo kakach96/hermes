@@ -6,10 +6,7 @@ import gleam/erlang/process
 import gleam/option
 import gleam/otp/actor
 import gleeunit
-import hermes/bus
-import hermes/envelope
 import hermes/ffi
-import hermes/room
 import hermes/store
 
 pub fn main() {

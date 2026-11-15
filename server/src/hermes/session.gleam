@@ -19,22 +19,31 @@ import gleam/http/response
 import gleam/int
 import gleam/json
 import gleam/option
+import gleam/result
 import mist
 
 import hermes/bus
 import hermes/envelope
+import hermes/meta
 import hermes/registry
 import hermes/room
+import hermes/rooms
 import hermes/store
 
 pub type State {
   State(
     bus: Subject(bus.BusMsg),
-    room: Subject(room.RoomMsg),
+    /// 动态房间管理器：join 时按 <space>.<channel> 取（或惰性建）房间
+    rooms: Subject(rooms.RoomsMsg),
     store: store.Store,
     registry: Subject(registry.RegistryMsg),
+    /// 入房后填充（"" = 未入房）
+    space: String,
+    channel: String,
     room_subject: String,
     presence_subject: String,
+    /// 入房时由房间管理器惰性解析出；未入房 = None
+    room: option.Option(Subject(room.RoomMsg)),
     /// 入房身份；"" = 尚未入房
     name: String,
     /// JetStream consumer 的退订 token
@@ -51,7 +60,7 @@ pub type State {
 }
 
 type ClientCmd {
-  JoinMsg(name: String, cursor: Int)
+  JoinMsg(name: String, cursor: Int, space: String, channel: String)
   ChatMsg(text: String, dedup_id: String)
   LeaveMsg
   /// 登记 Signal 注册包（bundle 是 JSON 字符串，server 不透明存储）
@@ -60,17 +69,23 @@ type ClientCmd {
   PrekeyFetchMsg(for_name: String)
   /// 端到端密文：server 原样转发进房间流，只有 to 本人解密
   EncMsg(to: String, body: String, dedup_id: String)
+  /// 建空间（创建者 = owner）；回 space_created / error
+  SpaceCreateMsg(space: String)
+  /// 列空间；回 spaces 帧
+  SpaceListMsg
+  /// 建频道（需 owner/admin）；回 channel_created / error
+  ChannelCreateMsg(space: String, channel: String)
+  /// 列某空间频道；回 channels 帧
+  ChannelListMsg(space: String)
 }
 
 /// 把 HTTP 请求升级为 WebSocket 会话。
 pub fn upgrade(
   req: request.Request(mist.Connection),
   bus: Subject(bus.BusMsg),
-  room: Subject(room.RoomMsg),
+  rooms: Subject(rooms.RoomsMsg),
   storage: store.Store,
   registry: Subject(registry.RegistryMsg),
-  room_subject: String,
-  presence_subject: String,
 ) -> response.Response(mist.ResponseData) {
   mist.websocket(
     request: req,
@@ -79,11 +94,14 @@ pub fn upgrade(
       let state =
         State(
           bus: bus,
-          room: room,
+          rooms: rooms,
           store: storage,
           registry: registry,
-          room_subject: room_subject,
-          presence_subject: presence_subject,
+          space: "",
+          channel: "",
+          room_subject: "",
+          presence_subject: "",
+          room: option.None,
           name: "",
           chat_token: "",
           presence_token: "",
@@ -124,26 +142,29 @@ fn handle_text(state: State, text: String, conn: mist.WebsocketConnection) {
       // 坏命令：v0 直接丢弃（M5 起回 error 帧让客户端感知）
       mist.continue(state)
     }
-    Ok(JoinMsg(name, cursor)) -> {
+    Ok(JoinMsg(name, cursor, space, channel)) -> {
       case state.name {
-        "" -> join(state, name, cursor, conn)
+        "" -> join(state, name, cursor, space, channel, conn)
         // 重复 join：忽略（客户端 bug 或重放，幂等对待）
         _ -> mist.continue(state)
       }
     }
     Ok(ChatMsg(text, dedup_id)) -> {
-      case state.name {
-        "" -> mist.continue(state)
-        // 未入房不许说话
-        _ -> {
-          room.send_message(state.room, state.name, text, dedup_id)
+      case state.room {
+        option.Some(room_actor) -> {
+          room.send_message(room_actor, state.name, text, dedup_id)
           mist.continue(state)
         }
+        // 未入房不许说话
+        option.None -> mist.continue(state)
       }
     }
     Ok(LeaveMsg) -> {
       let state = detach_all(state)
-      room.leave(state.room, state.name)
+      case state.room {
+        option.Some(room_actor) -> room.leave(room_actor, state.name)
+        option.None -> Nil
+      }
       mist.stop()
     }
 
@@ -166,21 +187,198 @@ fn handle_text(state: State, text: String, conn: mist.WebsocketConnection) {
     }
 
     Ok(EncMsg(to, body, dedup_id)) -> {
+      case state.room {
+        option.Some(room_actor) ->
+          room.send_enc(room_actor, to, state.name, body, dedup_id)
+        option.None -> Nil
+      }
+      mist.continue(state)
+    }
+
+    Ok(SpaceCreateMsg(space)) -> {
       case state.name {
         "" -> mist.continue(state)
-        name -> {
-          room.send_enc(state.room, to, name, body, dedup_id)
-          mist.continue(state)
-        }
+        name -> space_create(state, space, name, conn)
       }
+    }
+
+    Ok(SpaceListMsg) -> {
+      let frame = case meta.space_list(state.store) {
+        Ok(pairs) ->
+          json.object([
+            #("type", json.string("spaces")),
+            #(
+              "spaces",
+              json.array(pairs, fn(pair) {
+                let #(name, owner) = pair
+                json.object([
+                  #("name", json.string(name)),
+                  #("owner", json.string(owner)),
+                ])
+              }),
+            ),
+          ])
+          |> json.to_string
+        Error(reason) -> error_json(reason)
+      }
+      let _ = mist.send_text_frame(conn, frame)
+      mist.continue(state)
+    }
+
+    Ok(ChannelCreateMsg(space, channel)) -> {
+      case state.name {
+        "" -> mist.continue(state)
+        name -> channel_create(state, space, channel, name, conn)
+      }
+    }
+
+    Ok(ChannelListMsg(space)) -> {
+      let body = case meta.channel_list(state.store, space) {
+        Ok(names) ->
+          json.object([
+            #("type", json.string("channels")),
+            #("space", json.string(space)),
+            #("channels", json.array(names, json.string)),
+          ])
+          |> json.to_string
+        Error(reason) -> error_json(reason)
+      }
+      let _ = mist.send_text_frame(conn, body)
+      mist.continue(state)
     }
   }
 }
 
-fn join(state: State, name: String, cursor: Int, conn) {
+// ---------- 空间 / 频道管理 ----------
+
+fn space_create(
+  state: State,
+  space: String,
+  name: String,
+  conn,
+) -> mist.Next(State, bus.Delivered) {
+  case meta.space_create(state.store, space, name) {
+    Error(reason) -> {
+      let _ = mist.send_text_frame(conn, error_json(reason))
+      mist.continue(state)
+    }
+    Ok(Nil) -> {
+      // 建档时的从属写入：owner 角色 + 首个成员资格（失败不阻断，
+      // 元数据域的次级记录，下个动作会幂等补上）
+      let _ = meta.perm_set(state.store, space, name, "owner")
+      let _ = meta.member_upsert(state.store, space, name, "owner")
+      let _ = mist.send_text_frame(conn, space_created_json(space))
+      mist.continue(state)
+    }
+  }
+}
+
+fn channel_create(
+  state: State,
+  space: String,
+  channel: String,
+  name: String,
+  conn,
+) -> mist.Next(State, bus.Delivered) {
+  let result =
+    meta.check_name(channel)
+    |> result.try(fn(_) { meta.check_name(space) })
+    |> result.try(fn(_) {
+      case meta.space_exists(state.store, space) {
+        Ok(True) -> Ok(Nil)
+        Ok(False) -> Error("空间不存在: " <> space)
+        Error(reason) -> Error(reason)
+      }
+    })
+    |> result.try(fn(_) {
+      case meta.can_create_channel(state.store, space, name) {
+        Ok(True) -> Ok(Nil)
+        Ok(False) -> Error("无权在 " <> space <> " 建频道（需 owner/admin）")
+        Error(reason) -> Error(reason)
+      }
+    })
+    |> result.try(fn(_) { meta.channel_create(state.store, space, channel) })
+  case result {
+    Error(reason) -> {
+      let _ = mist.send_text_frame(conn, error_json(reason))
+      mist.continue(state)
+    }
+    Ok(Nil) -> {
+      let _ = mist.send_text_frame(
+        conn,
+        channel_created_json(space, channel),
+      )
+      mist.continue(state)
+    }
+  }
+}
+
+fn join(
+  state: State,
+  name: String,
+  cursor: Int,
+  space: String,
+  channel: String,
+  conn,
+) {
+  // 空间/频道名过 subject-token 校验（NATS 路由注入防线）；
+  // 用户名走宽松规则（不进 subject，中文/大写合法）
+  case
+    meta.check_user(name)
+    |> result.try(fn(_) { meta.check_name(space) })
+    |> result.try(fn(_) { meta.check_name(channel) })
+  {
+    Error(reason) -> {
+      let _ = mist.send_text_frame(conn, error_json(reason))
+      mist.continue(state)
+    }
+    Ok(_) -> join_ok(state, name, cursor, space, channel, conn)
+  }
+}
+
+fn join_ok(
+  state: State,
+  name: String,
+  cursor: Int,
+  space: String,
+  channel: String,
+  conn,
+) {
+  let _ = meta.user_touch(state.store, name)
+
+  // 开放模型（v0）：空间不存在则自动建档，首个进入者即 owner；
+  // 频道不存在则自动建（join 即创建，显式建频道走 channel_create 帧才有权限门）
+  case meta.space_exists(state.store, space) {
+    Ok(True) -> {
+      let _ = meta.member_upsert(state.store, space, name, "member")
+      Nil
+    }
+    Ok(False) -> {
+      let _ = meta.space_create(state.store, space, name)
+      let _ = meta.perm_set(state.store, space, name, "owner")
+      let _ = meta.member_upsert(state.store, space, name, "owner")
+      Nil
+    }
+    Error(_) -> Nil
+  }
+  let _ =
+    meta.channel_exists(state.store, space, channel)
+    |> result.try(fn(exists) {
+      case exists {
+        True -> Ok(Nil)
+        False -> meta.channel_create(state.store, space, channel)
+      }
+    })
+
+  // 房间 subject 直接编码层级：hermes.rooms.<space>.<channel>。
+  // JetStream 流订的是 hermes.rooms.> 前缀，天然覆盖所有空间/频道。
+  let key = space <> "." <> channel
+  let room_subject = "hermes.rooms." <> key
+  let presence_subject = "hermes.presence." <> key
+
   // 游标恢复：客户端报了 cursor 就用客户端的（设备真相在客户端），
   // 没报（=0）就查服务端替它记住的那个
-  let cursor_key = "cursor:" <> state.room_subject <> ":" <> name
+  let cursor_key = "cursor:" <> room_subject <> ":" <> name
   let start_cursor = case cursor > 0 {
     True -> cursor
     False ->
@@ -195,40 +393,50 @@ fn join(state: State, name: String, cursor: Int, conn) {
   }
   let _ = store.put(state.store, cursor_key, int.to_string(start_cursor))
 
-  // 顺序敏感：先挂 presence 订阅，再让房间广播加入通知 —— 自己也能收到
-  case bus.attach_presence(state.bus, state.presence_subject, state.ws_subject) {
+  case rooms.room_of(state.rooms, space, channel) {
     Error(reason) -> {
-      let _ = mist.send_text_frame(conn, error_json("presence: " <> reason))
+      let _ = mist.send_text_frame(conn, error_json(reason))
       mist.continue(state)
     }
-    Ok(presence_token) -> {
-      let members = room.join(state.room, name)
+    Ok(room_actor) -> {
+      // 顺序敏感：先挂 presence 订阅，再让房间广播加入通知 —— 自己也能收到
       case
-        bus.attach(
-          state.bus,
-          state.room_subject,
-          start_cursor + 1,
-          state.ws_subject,
-        )
+        bus.attach_presence(state.bus, presence_subject, state.ws_subject)
       {
         Error(reason) -> {
-          bus.detach(state.bus, presence_token)
-          room.leave(state.room, name)
-          let _ = mist.send_text_frame(conn, error_json("attach: " <> reason))
+          let _ = mist.send_text_frame(conn, error_json("presence: " <> reason))
           mist.continue(state)
         }
-        Ok(chat_token) -> {
-          let _ = mist.send_text_frame(conn, joined_json(members))
-          mist.continue(
-            State(
-              ..state,
-              name: name,
-              chat_token: chat_token,
-              presence_token: presence_token,
-              cursor_key: cursor_key,
-              cursor: start_cursor,
-            ),
-          )
+        Ok(presence_token) -> {
+          let members = room.join(room_actor, name)
+          case
+            bus.attach(state.bus, room_subject, start_cursor + 1, state.ws_subject)
+          {
+            Error(reason) -> {
+              bus.detach(state.bus, presence_token)
+              room.leave(room_actor, name)
+              let _ = mist.send_text_frame(conn, error_json("attach: " <> reason))
+              mist.continue(state)
+            }
+            Ok(chat_token) -> {
+              let _ = mist.send_text_frame(conn, joined_json(members))
+              mist.continue(
+                State(
+                  ..state,
+                  name: name,
+                  space: space,
+                  channel: channel,
+                  room_subject: room_subject,
+                  presence_subject: presence_subject,
+                  room: option.Some(room_actor),
+                  chat_token: chat_token,
+                  presence_token: presence_token,
+                  cursor_key: cursor_key,
+                  cursor: start_cursor,
+                ),
+              )
+            }
+          }
         }
       }
     }
@@ -258,8 +466,11 @@ fn close(state: State) -> Nil {
   case state.name {
     "" -> Nil
     _ -> {
-      let _ = detach_all(state)
-      room.leave(state.room, state.name)
+      let state = detach_all(state)
+      case state.room {
+        option.Some(room_actor) -> room.leave(room_actor, state.name)
+        option.None -> Nil
+      }
     }
   }
 }
@@ -354,6 +565,20 @@ fn error_json(reason: String) -> String {
   |> json.to_string
 }
 
+fn space_created_json(space: String) -> String {
+  json.object([#("type", json.string("space_created")), #("name", json.string(space))])
+  |> json.to_string
+}
+
+fn channel_created_json(space: String, channel: String) -> String {
+  json.object([
+    #("type", json.string("channel_created")),
+    #("space", json.string(space)),
+    #("name", json.string(channel)),
+  ])
+  |> json.to_string
+}
+
 fn prekey_bundle_json(for_name: String, bundle: String) -> String {
   json.object([
     #("type", json.string("prekey_bundle")),
@@ -372,7 +597,18 @@ fn decode_cmd(text: String) -> Result(ClientCmd, Nil) {
       "join" -> {
         use name <- decode.field("name", decode.string)
         use cursor <- decode.field("cursor", decode.int)
-        decode.success(JoinMsg(name, cursor))
+        // 空间/频道可选：缺省 lobby/general（e2e 工具与旧客户端零改动）
+        use space <- decode.optional_field(
+          "space",
+          meta.default_space,
+          decode.string,
+        )
+        use channel <- decode.optional_field(
+          "channel",
+          meta.default_channel,
+          decode.string,
+        )
+        decode.success(JoinMsg(name, cursor, space, channel))
       }
       "msg" -> {
         use text <- decode.field("text", decode.string)
@@ -393,6 +629,20 @@ fn decode_cmd(text: String) -> Result(ClientCmd, Nil) {
         use body <- decode.field("body", decode.string)
         use dedup_id <- decode.field("dedup_id", decode.string)
         decode.success(EncMsg(to, body, dedup_id))
+      }
+      "space_create" -> {
+        use space <- decode.field("space", decode.string)
+        decode.success(SpaceCreateMsg(space))
+      }
+      "space_list" -> decode.success(SpaceListMsg)
+      "channel_create" -> {
+        use space <- decode.field("space", decode.string)
+        use channel <- decode.field("channel", decode.string)
+        decode.success(ChannelCreateMsg(space, channel))
+      }
+      "channel_list" -> {
+        use space <- decode.field("space", decode.string)
+        decode.success(ChannelListMsg(space))
       }
       _ -> decode.failure(LeaveMsg, "unknown client command")
     }

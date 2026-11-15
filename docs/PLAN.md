@@ -44,6 +44,7 @@ core 内置 libsignal 会话（加密里程碑见 M6）。
 | M4 | storage：fjall sidecar（Erlang port 行协议）+ server store 驱动 | ✅ 游标/成员名单持久化，sidecar 崩溃重启数据仍在，10 测试全绿 |
 | M5 | core + Tauri：WS 连接、游标补投、Bloom 幂等、双实例聊天 | ✅ GUI 单实例全链路实测通过（入房/补投/发送），node e2e 覆盖双实例 |
 | M6 | crypto：libsignal 会话建立 + 端到端密文 | ✅ 三端实测：加密互聊、名单活水、本地回显、游标补投 |
+| M7 | 空间/频道：fjall 多 keyspace 元数据（users/spaces/channels/members/perms）+ 动态房间管理器 | ✅ e2e 8 项全绿 + 旧 lobby 兼容回归通过 |
 
 v0 明确**不做**（留给第二轮）：树状 fanout、QUIC、UniFFI、iOS/Android 视图、
 ProVerif、RocksDB。任何文档冲突以本表为准。
@@ -131,3 +132,10 @@ ProVerif、RocksDB。任何文档冲突以本表为准。
 | M6 | 【继上】失败的 cargo 运行会把 git 源写进 Cargo.lock；之后即使改成 path 依赖，cargo 解析时仍会尝试更新 lock 里的 git 源 → 继续假死 | 改源后删 Cargo.lock 重来；多进程 cargo + package cache 锁互等是"假死"的表象，用进程 CPU 时间（全 0）+ git fetch 进程判断卡的是网络不是编译 |
 | M6 | libsignal（官方 Rust）的 store 方法是 `async_trait(?Send)` → 返回 !Send future，进不了 `tokio::spawn` 的任务 | crypto 独立线程 + 每次调用 `now_or_never()` 同步驱动（这些 future 从不真正挂起，官方测试同款） |
 | M6 | libsignal 许可证 AGPL-3.0（强传染） | 自嗨项目无碍；若未来分发闭源客户端需替换实现或独立进程隔离 |
+
+| M7 | **用户名 ≠ 空间/频道名的校验域**：第一版把 `[a-z0-9_-]` 全都套上，"Alice"当场被拒 | 名字校验按"进不进 NATS subject"分域：space/channel 必须 subject-token 安全（点号 = token 边界 = 注入面）；用户名不进 subject，只挡空名/超长，中文大写合法 |
+| M7 | fjall 2.x `Keyspace::open_partition` 每次调用都返回句柄；partition 若从 wire 动态建 = 无界增长 | partition 白名单启动时全开（kv/users/spaces/channels/members/perms），wire 侧只能引用不能创建 |
+| M7 | 房间静态枚举进监督树的空间/频道时代不够用；动态 spawn 若失控（每连接一个房间）= 进程泄漏 | rooms 管理器：单进程 Dict 按需 lazy spawn，linked 房间崩 → 管理器重启 → 名单瞬态自愈（宪法语义正好兜底） |
+| M7 | `process.new_name` 每个新频道一个唯一原子 | 有界低频（频道首次有人进那一刻），不是热循环，可接受；频道量级大了要换 gproc 式寻址（已记入 rooms.gleam 注释） |
+| M7 | `hermes_ffi:unique_inbox` 输出**大写**十六进制，测试实体名拼进去全被小写校验拒绝 | 测试名一律 `string.lowercase(unique_inbox(...))` |
+| M7 | StartError 是 opaque 类型，不能 <> 拼接 | 归一化成字符串时丢细节换可用性（rooms.gleam） |

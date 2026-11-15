@@ -23,7 +23,7 @@
                 │ （QUIC + protobuf，第二轮）        │
  ┌──────────────▼───────────────────────────────────▼──────────────┐
  │                  server（Gleam on Erlang/OTP）                  │
- │       ws (mist) · session · room · bus · registry · store       │
+ │    ws (mist) · session · rooms(动态) · room · meta · bus        │
  │           E2E 密文的不透明转发者 —— 只见密文                      │
  └───────┬─────────────────────────────────────────┬───────────────┘
          │ NATS 协议                               │ Erlang port（stdio，JSON 行）
@@ -53,11 +53,16 @@ NATS JetStream 承担持久化与重放 → fjall sidecar 承担游标等状态�
 ### 1. 入房与成员活水
 
 ```
-client ──join{name, cursor}──► session ──► room.Join
-                                            ├─ 名单去重置顶（roster = 连接生命周期，不持久化）
-                                            ├─ presence: Notice("xx 加入了房间")
-                                            ├─ presence: Members(快照)   ← 名单活水
-                                            └─ 返回当前名单
+client ──join{name, cursor, space?, channel?}──► session
+         ├─ 名字校验：用户名宽松；space/channel 必须 subject-token 安全
+         ├─ 元数据建档（fjall meta 域）：user_touch / 空间自动建档（首进者=owner）
+         │   / 频道自动建档 / 成员资格登记（members partition，持久）
+         ├─ rooms 管理器：按 <space>.<channel> 惰性 spawn 房间 Actor
+         └─ room.Join
+              ├─ 名单去重置顶（roster = 连接生命周期，不持久化）
+              ├─ presence: Notice("xx 加入了房间")
+              ├─ presence: Members(快照)   ← 名单活水
+              └─ 返回当前名单
 ```
 
 - 成员资格 = 连接生命周期：服务重启/会话断开即离开，**名册从不落盘**。
@@ -115,6 +120,10 @@ storage:
 4. **presence 非持久订阅**，不进 JetStream（重放不会收到陈旧通知）。
 5. **retained 仅用于在线状态**，不用于聊天记录。
 6. **server 与 core 永不代码依赖**，只在 proto 契约会师。
+7. **成员资格（持久）≠ 在线名册（瞬态）**：空间成员与角色落 fjall
+   （members/perms partition）；"谁此刻在线"永远只在房间 Actor 内存。
+8. **space/channel 名必须 subject-token 安全**（`[a-z0-9_-]{1,32}`）；
+   用户名不进 NATS subject，宽松校验。
 
 ## 六、v0 已知边界（第二轮候选）
 

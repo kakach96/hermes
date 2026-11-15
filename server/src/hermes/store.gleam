@@ -13,7 +13,8 @@
 import gleam/bit_array
 import gleam/dynamic/decode
 import gleam/erlang/process.{type Name, type Subject}
-import gleam/json
+import gleam/json.{type Json}
+import gleam/list
 import gleam/option.{type Option}
 import gleam/otp/actor
 import gleam/otp/supervision
@@ -35,6 +36,25 @@ pub type StoreMsg {
   /// fire-and-forget 写入（游标推进这类高频低价值更新用）
   PutAsync(key: String, value: String)
   Delete(key: String, reply_to: Subject(Result(Nil, String)))
+  /// 指定 partition 的读写（元数据域：users/spaces/channels/members/perms）
+  KsGet(
+    ks: String,
+    key: String,
+    reply_to: Subject(Result(Option(String), String)),
+  )
+  KsPut(
+    ks: String,
+    key: String,
+    value: String,
+    reply_to: Subject(Result(Nil, String)),
+  )
+  KsDelete(ks: String, key: String, reply_to: Subject(Result(Nil, String)))
+  /// 前缀扫描（列空间/频道/成员）；key 升序返回
+  KsList(
+    ks: String,
+    prefix: String,
+    reply_to: Subject(Result(List(#(String, String)), String)),
+  )
 }
 
 pub type StoreState {
@@ -76,7 +96,7 @@ pub fn start(
 fn handle(state: StoreState, msg: StoreMsg) -> actor.Next(StoreState, StoreMsg) {
   case msg {
     Get(key, reply_to) -> {
-      let resp = case call_port(state.port, encode_get(key)) {
+      let resp = case call_port(state.port, encode_get(key, option.None)) {
         Ok(payload) -> parse(payload, has_found: True)
         Error(reason) -> Error(reason)
       }
@@ -85,7 +105,23 @@ fn handle(state: StoreState, msg: StoreMsg) -> actor.Next(StoreState, StoreMsg) 
     }
 
     Put(key, value, reply_to) -> {
-      let resp = case call_port(state.port, encode_put(key, value)) {
+      let resp =
+        case call_port(state.port, encode_put(key, value, option.None)) {
+          Ok(payload) -> parse(payload, has_found: False) |> to_nil
+          Error(reason) -> Error(reason)
+        }
+      process.send(reply_to, resp)
+      actor.continue(state)
+    }
+
+    PutAsync(key, value) -> {
+      // 崩了也不阻塞主流程：写不进去顶多重连时多补几条
+      let _ = call_port(state.port, encode_put(key, value, option.None))
+      actor.continue(state)
+    }
+
+    Delete(key, reply_to) -> {
+      let resp = case call_port(state.port, encode_delete(key)) {
         Ok(payload) -> parse(payload, has_found: False) |> to_nil
         Error(reason) -> Error(reason)
       }
@@ -93,15 +129,38 @@ fn handle(state: StoreState, msg: StoreMsg) -> actor.Next(StoreState, StoreMsg) 
       actor.continue(state)
     }
 
-    PutAsync(key, value) -> {
-      // 崩了也不阻塞主流程：写不进去顶多重连时多补几条
-      let _ = call_port(state.port, encode_put(key, value))
+    KsGet(ks, key, reply_to) -> {
+      let resp = case call_port(state.port, encode_get(key, option.Some(ks))) {
+        Ok(payload) -> parse(payload, has_found: True)
+        Error(reason) -> Error(reason)
+      }
+      process.send(reply_to, to_option(resp))
       actor.continue(state)
     }
 
-    Delete(key, reply_to) -> {
-      let resp = case call_port(state.port, encode_delete(key)) {
-        Ok(payload) -> parse(payload, has_found: False) |> to_nil
+    KsPut(ks, key, value, reply_to) -> {
+      let resp =
+        case call_port(state.port, encode_put(key, value, option.Some(ks))) {
+          Ok(payload) -> parse(payload, has_found: False) |> to_nil
+          Error(reason) -> Error(reason)
+        }
+      process.send(reply_to, resp)
+      actor.continue(state)
+    }
+
+    KsDelete(ks, key, reply_to) -> {
+      let resp =
+        case call_port(state.port, encode_delete_with(key, option.Some(ks))) {
+          Ok(payload) -> parse(payload, has_found: False) |> to_nil
+          Error(reason) -> Error(reason)
+        }
+      process.send(reply_to, resp)
+      actor.continue(state)
+    }
+
+    KsList(ks, prefix, reply_to) -> {
+      let resp = case call_port(state.port, encode_list(ks, prefix)) {
+        Ok(payload) -> parse_items(payload)
         Error(reason) -> Error(reason)
       }
       process.send(reply_to, resp)
@@ -126,6 +185,37 @@ pub fn put_async(store: Store, key: String, value: String) -> Nil {
 
 pub fn delete(store: Store, key: String) -> Result(Nil, String) {
   process.call(store, 5000, Delete(key, _))
+}
+
+/// 指定 partition 读写（元数据域）。ks 必须是 sidecar 白名单之一。
+pub fn ks_get(
+  store: Store,
+  ks: String,
+  key: String,
+) -> Result(Option(String), String) {
+  process.call(store, 5000, KsGet(ks, key, _))
+}
+
+pub fn ks_put(
+  store: Store,
+  ks: String,
+  key: String,
+  value: String,
+) -> Result(Nil, String) {
+  process.call(store, 5000, KsPut(ks, key, value, _))
+}
+
+pub fn ks_delete(store: Store, ks: String, key: String) -> Result(Nil, String) {
+  process.call(store, 5000, KsDelete(ks, key, _))
+}
+
+/// 前缀扫描，key 升序。空 prefix = 全量列出。
+pub fn ks_list(
+  store: Store,
+  ks: String,
+  prefix: String,
+) -> Result(List(#(String, String)), String) {
+  process.call(store, 5000, KsList(ks, prefix, _))
 }
 
 // ---------- 内部 ----------
@@ -179,32 +269,105 @@ fn to_nil(resp: Result(Resp, String)) -> Result(Nil, String) {
   }
 }
 
-fn encode_get(key: String) -> BitArray {
-  json.object([
-    #("op", json.string("get")),
-    #("key", json.string(key)),
-  ])
-  |> json.to_string
-  |> bit_array.from_string
+fn encode_get(key: String, ks: Option(String)) -> BitArray {
+  encode_ks(
+    [
+      #("op", json.string("get")),
+      #("key", json.string(key)),
+    ],
+    ks,
+  )
 }
 
-fn encode_put(key: String, value: String) -> BitArray {
-  json.object([
-    #("op", json.string("put")),
-    #("key", json.string(key)),
-    #("value", json.string(value)),
-  ])
-  |> json.to_string
-  |> bit_array.from_string
+fn encode_put(key: String, value: String, ks: Option(String)) -> BitArray {
+  encode_ks(
+    [
+      #("op", json.string("put")),
+      #("key", json.string(key)),
+      #("value", json.string(value)),
+    ],
+    ks,
+  )
 }
 
 fn encode_delete(key: String) -> BitArray {
+  encode_delete_with(key, option.None)
+}
+
+fn encode_delete_with(key: String, ks: Option(String)) -> BitArray {
+  encode_ks(
+    [
+      #("op", json.string("delete")),
+      #("key", json.string(key)),
+    ],
+    ks,
+  )
+}
+
+fn encode_list(ks: String, prefix: String) -> BitArray {
   json.object([
-    #("op", json.string("delete")),
-    #("key", json.string(key)),
+    #("op", json.string("list")),
+    #("ks", json.string(ks)),
+    #("prefix", json.string(prefix)),
   ])
   |> json.to_string
   |> bit_array.from_string
+}
+
+/// 无 ks 字段 = sidecar 缺省 "kv"（游标等 v0 数据）
+fn encode_ks(fields: List(#(String, Json)), ks: Option(String)) -> BitArray {
+  let fields = case ks {
+    option.Some(ks) -> list.append(fields, [#("ks", json.string(ks))])
+    option.None -> fields
+  }
+  json.object(fields)
+  |> json.to_string
+  |> bit_array.from_string
+}
+
+type Item {
+  Item(key: String, value: String)
+}
+
+fn parse_items(payload: BitArray) -> Result(List(#(String, String)), String) {
+  let decoder = {
+    use ok <- decode.field("ok", decode.bool)
+    case ok {
+      False -> {
+        use error <- decode.field("error", decode.string)
+        decode.success(Error(error))
+      }
+      True -> {
+        use items <- decode.field(
+          "items",
+          decode.list(item_decoder()),
+        )
+        decode.success(Ok(items))
+      }
+    }
+  }
+  case bit_array.to_string(payload) {
+    Error(Nil) -> Error("sidecar 应答不是 UTF-8")
+    Ok(text) ->
+      case json.parse(from: text, using: decoder) {
+        Ok(Ok(items)) ->
+          Ok(
+            items
+            |> list.map(fn(item) {
+              let Item(key, value) = item
+              #(key, value)
+            }),
+          )
+        Ok(Error(reason)) -> Error(reason)
+        Error(_) -> Error("sidecar 应答 JSON 无法解析")
+      }
+  }
+}
+
+fn item_decoder() -> decode.Decoder(Item) {
+  use key <- decode.field("key", decode.string)
+  use value <- decode.field("value", decode.string)
+  decode.success(Item(key, value))
 }
 
 // ---------- Erlang FFI ----------

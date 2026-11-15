@@ -23,7 +23,7 @@
                 │ (QUIC + protobuf, round 2)        │
  ┌──────────────▼───────────────────────────────────▼──────────────┐
  │                  server (Gleam on Erlang/OTP)                   │
- │       ws (mist) · session · room · bus · registry · store       │
+ │    ws (mist) · session · rooms(dynamic) · room · meta · bus     │
  │        opaque E2E relay — ciphertext only, never plaintext      │
  └───────┬─────────────────────────────────────────┬───────────────┘
          │ NATS protocol                           │ Erlang port (stdio, JSON lines)
@@ -54,12 +54,19 @@ durability and replay → the fjall sidecar owns externalized state (cursors).**
 ### 3.1 Join & live roster
 
 ```
-client ──join{name, cursor}──► session ──► room.Join
-                                            ├─ dedupe + move-to-front
-                                            │  (roster = connection lifetime, never persisted)
-                                            ├─ presence: Notice("xx joined")
-                                            ├─ presence: Members(snapshot)  ← live roster
-                                            └─ reply: current members
+client ──join{name, cursor, space?, channel?}──► session
+         ├─ name checks: user names are loose; space/channel must be
+         │   subject-token safe
+         ├─ metadata registration (fjall meta partitions): user_touch /
+         │   auto space creation (first joiner = owner) / auto channel
+         │   creation / durable membership (members partition)
+         ├─ rooms manager: lazily spawn a room actor per <space>.<channel>
+         └─ room.Join
+              ├─ dedupe + move-to-front
+              │  (roster = connection lifetime, never persisted)
+              ├─ presence: Notice("xx joined")
+              ├─ presence: Members(snapshot)  ← live roster
+              └─ reply: current members
 ```
 
 - Membership equals connection lifetime: server restart / socket drop = left;
@@ -126,6 +133,11 @@ reconnect join{cursor} ──► session starts a JetStream ordered consumer
 4. **Presence uses transient subscriptions**, never enters JetStream.
 5. **Retained is for presence only**, never chat history.
 6. **server and core never share code dependencies**; they meet only at the proto contract.
+7. **Membership (durable) ≠ live roster (transient)**: space members and
+   roles live in fjall (members/perms partitions); "who is online now" only
+   ever exists in room actor memory.
+8. **Space/channel names must be subject-token safe** (`[a-z0-9_-]{1,32}`);
+   user names never enter NATS subjects and are validated loosely.
 
 ## 6. Known v0 boundaries (round-2 candidates)
 

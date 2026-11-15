@@ -18,7 +18,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::codec::{ClientEvent, ClientFrame, ServerFrame};
+use crate::codec::{ClientEvent, ClientFrame, ServerFrame, DEFAULT_CHANNEL, DEFAULT_SPACE};
 use crate::crypto::{self, CryptoCmd, CryptoEvent};
 use crate::idempotency::Bloom;
 
@@ -29,8 +29,29 @@ pub struct Handle {
 }
 
 impl Handle {
-    pub fn join(&self, name: String, cursor: u64) {
-        let _ = self.cmd_tx.send(ClientFrame::Join { name, cursor });
+    /// 入房。space/channel 传空串则用 wire 缺省（lobby/general）。
+    pub fn join(&self, name: String, cursor: u64, space: String, channel: String) {
+        let space = if space.is_empty() { DEFAULT_SPACE.into() } else { space };
+        let channel = if channel.is_empty() { DEFAULT_CHANNEL.into() } else { channel };
+        let _ = self.cmd_tx.send(ClientFrame::Join { name, cursor, space, channel });
+    }
+
+    /// 建空间（创建者 = owner）。需已入房（server 端校验）。
+    pub fn create_space(&self, space: String) {
+        let _ = self.cmd_tx.send(ClientFrame::SpaceCreate { space });
+    }
+
+    pub fn list_spaces(&self) {
+        let _ = self.cmd_tx.send(ClientFrame::SpaceList);
+    }
+
+    /// 建频道（需空间 owner/admin —— server 端校验）。
+    pub fn create_channel(&self, space: String, channel: String) {
+        let _ = self.cmd_tx.send(ClientFrame::ChannelCreate { space, channel });
+    }
+
+    pub fn list_channels(&self, space: String) {
+        let _ = self.cmd_tx.send(ClientFrame::ChannelList { space });
     }
 
     pub fn send_text(&self, text: String) {
@@ -84,9 +105,15 @@ pub async fn connect(
                             let _ = ev_tx.send(ClientEvent::Disconnected);
                             break;
                         }
-                        ClientFrame::Join { name, cursor: c } => {
+                        ClientFrame::Join { name, cursor: c, space, channel } => {
                             // 先构造帧再移交 name，避免移动冲突
-                            let join_frame = ClientFrame::Join { name: name.clone(), cursor: c }.to_json();
+                            let join_frame = ClientFrame::Join {
+                                name: name.clone(),
+                                cursor: c,
+                                space,
+                                channel,
+                            }
+                            .to_json();
                             joined = true;
                             cursor = c;
                             me = name.clone();
@@ -243,6 +270,19 @@ pub async fn connect(
                         }
                         ServerFrame::Error { reason } => {
                             let _ = ev_tx.send(ClientEvent::Error { reason });
+                        }
+                        // ---- 空间/频道目录：直接投影给视图层 ----
+                        ServerFrame::Spaces { spaces } => {
+                            let _ = ev_tx.send(ClientEvent::SpaceList { spaces });
+                        }
+                        ServerFrame::SpaceCreated { name } => {
+                            let _ = ev_tx.send(ClientEvent::SpaceCreated { name });
+                        }
+                        ServerFrame::Channels { space, channels } => {
+                            let _ = ev_tx.send(ClientEvent::ChannelList { space, channels });
+                        }
+                        ServerFrame::ChannelCreated { space, name } => {
+                            let _ = ev_tx.send(ClientEvent::ChannelCreated { space, name });
                         }
                     }
                 }

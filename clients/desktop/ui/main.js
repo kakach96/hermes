@@ -118,7 +118,38 @@ function handle(ev) {
         $("name").focus();
       }, 1200);
       break;
-    default:
+    // 空间/频道元数据事件：渲染 + 填充 datalist 建议
+  case "space_list": {
+    const dl = $("space-list");
+    dl.innerHTML = "";
+    const names = (ev.spaces || []).map((s) => s.name);
+    for (const s of ev.spaces || []) {
+      const opt = document.createElement("option");
+      opt.value = s.name;
+      opt.label = "owner: " + s.owner;
+      dl.appendChild(opt);
+    }
+    addLine("notice", `空间 ${names.length} 个：${names.join(" · ") || "（空）"}`);
+    break;
+  }
+  case "space_created":
+    addLine("notice", `空间已创建：${ev.name}（你是 owner）`);
+    break;
+  case "channel_list": {
+    const dl = $("channel-list");
+    dl.innerHTML = "";
+    for (const c of ev.channels || []) {
+      const opt = document.createElement("option");
+      opt.value = c;
+      dl.appendChild(opt);
+    }
+    addLine("notice", `${ev.space} 的频道：${(ev.channels || []).join(" · ") || "（空）"}`);
+    break;
+  }
+  case "channel_created":
+    addLine("notice", `频道已创建：${ev.space}/${ev.name}`);
+    break;
+  default:
       addLine("err", "未知事件: " + JSON.stringify(ev));
   }
 }
@@ -152,9 +183,18 @@ $("connect").onclick = async () => {
   $("join-error").textContent = "";
   $("connect").disabled = true;
   try {
-    // cursor 用设备记住的 lastSeq（重连补投的钥匙）
-    await invoke("connect", { url, name, cursor: lastSeq });
+    // cursor 用设备记住的 lastSeq（重连补投的钥匙）；
+    // 空间/频道随 join 下发（不存在则服务端自动建档，首进者即 owner）
+    await invoke("connect", {
+      url,
+      name,
+      cursor: lastSeq,
+      space: $("space").value.trim(),
+      channel: $("channel").value.trim(),
+    });
     myName = name;
+    $("room-tag").textContent =
+      `${$("space").value.trim() || "lobby"}/${$("channel").value.trim() || "general"}`;
     log.innerHTML = "";
     $("join").classList.add("hidden");
     $("chat").classList.remove("hidden");
@@ -175,6 +215,17 @@ $("connect").onclick = async () => {
 $("name").addEventListener("keydown", (e) => {
   if (e.key === "Enter") $("connect").click();
 });
+
+// ---- 空间/频道管理（结果走事件回流渲染；需已连接）----
+$("btn-space-list").onclick = () => invoke("list_spaces").catch((e) => ($("join-error").textContent = String(e)));
+$("btn-space-create").onclick = () =>
+  invoke("create_space", { space: $("space").value.trim() }).catch((e) => ($("join-error").textContent = String(e)));
+$("btn-channel-list").onclick = () =>
+  invoke("list_channels", { space: $("space").value.trim() }).catch((e) => ($("join-error").textContent = String(e)));
+$("btn-channel-create").onclick = () =>
+  invoke("create_channel", { space: $("space").value.trim(), channel: $("channel").value.trim() }).catch(
+    (e) => ($("join-error").textContent = String(e)),
+  );
 
 function sendCurrent() {
   const text = $("input").value.trim();

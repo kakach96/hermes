@@ -84,6 +84,36 @@ body {
   letter-spacing: 0.02em;
 }
 
+// 空间/频道双字段一行 + 迷你管理按钮行（v0 空间/频道特性）
+.field-row {
+  display: flex;
+  gap: 14px;
+}
+.field-row .field {
+  flex: 1;
+  min-width: 0;
+}
+.mini-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+.mini {
+  flex: 1;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  opacity: 0.75;
+  font-size: 11px;
+  padding: 5px 2px;
+  cursor: pointer;
+}
+.mini:hover {
+  opacity: 1;
+  border-color: var(--accent);
+}
+
 .field {
   background: transparent;
   border: none;

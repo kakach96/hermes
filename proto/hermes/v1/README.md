@@ -7,8 +7,9 @@
 ## 载体
 
 - 客户端 ↔ server：WebSocket 文本帧，`ws://host:8080/ws`
-- server 内部 ↔ NATS：`hermes.rooms.<room>` 聊天（进 JetStream 流 `hermes_chat`），
-  `hermes.presence.<room>` 在线通知（不进流）
+- server 内部 ↔ NATS：`hermes.rooms.<space>.<channel>` 聊天（进 JetStream 流
+  `hermes_chat`，流订 `hermes.rooms.>` 前缀），`hermes.presence.<space>.<channel>`
+  在线通知（不进流）。v1 单房间 = space 缺省（见 M7 一节）
 - 房间 subject 里流转的信封 **不带 seq**：seq 存在于 JetStream 投递的
   `$JS.ACK` 回执中（第 6 个点分段），由 bus 解出后加到 WS 帧上
 
@@ -16,12 +17,16 @@
 
 | type | 字段 | 语义 |
 | --- | --- | --- |
-| `join` | `name` `cursor` | 入房。cursor = 该设备最后收到的 stream seq（新设备传 0） |
+| `join` | `name` `cursor` `space?` `channel?` | 入房。cursor = 该设备最后收到的 stream seq（新设备传 0）。space/channel 可选，缺省 `lobby`/`general`；不存在时自动建档（首个进入者 = 空间 owner） |
 | `msg` | `text` `dedup_id` | **legacy 明文**聊天（工具/测试用；GUI 走 enc） |
 | `leave` | — | 主动退房（会关连接） |
 | `prekey_register` | `bundle` | 登记 Signal 注册包（bundle 为 JSON 字符串，server 不透明存储，同名覆盖） |
 | `prekey_fetch` | `for` | 取某人的注册包 → 回 `prekey_bundle` 帧（空 bundle = 对方无登记） |
 | `enc` | `to` `body` `dedup_id` | 端到端密文：server 原样转发进房间流，只有 `to` 本人能解密 |
+| `space_create` | `space` | 建空间（创建者 = owner）。需已入房（任意空间） |
+| `space_list` | — | 列全部空间 |
+| `channel_create` | `space` `channel` | 建频道。**需该空间 owner/admin**（v0 权限模型） |
+| `channel_list` | `space` | 列某空间的频道 |
 
 ## 服务端 → 客户端（WS 文本帧）
 
@@ -33,6 +38,11 @@
 | `notice` | `text` | presence（加入/离开/掉线）。**不重放** |
 | `error` | `reason` | 服务端拒绝 |
 | `prekey_bundle` | `for` `bundle` | prekey_fetch 的回执；空 bundle 表示对方不在线 |
+| `members` | `members: string[]` | 成员名单快照（presence 通道广播，加入/退房时更新；加密目标名单的活水） |
+| `spaces` | `spaces: [{name,owner}]` | 空间列表（space_list 的回执） |
+| `space_created` | `name` | 空间创建成功（创建者 = owner） |
+| `channels` | `space` `channels: string[]` | 某空间的频道列表（channel_list 的回执） |
+| `channel_created` | `space` `name` | 频道创建成功 |
 
 ## 端到端加密（M6，pairwise）
 
@@ -45,6 +55,18 @@
 - 明确的 v0 限制：群组不走 Sender Key（pairwise，房间大 = O(N) 副本）；
   会话状态不落盘，客户端重启后无法解密重放窗口里的旧密文
 
+## 空间/频道（M7）
+
+- 层级编进 subject：`hermes.rooms.<space>.<channel>` —— JetStream 流
+  `hermes.rooms.>` 天然覆盖，无需动流配置；游标 key 也自然按频道隔离
+- **成员资格（持久）≠ 在线名册（瞬态）**：fjall 的 members/perms 存"谁属于
+  这个空间、什么角色"；"谁此刻在线"仍在房间 Actor 内存里（连接生命周期）
+- 名字规则：space/channel 必须是 subject token 安全的 `[a-z0-9_-]{1,32}`
+  （点号 = subject token 边界，放任用户输入 = 路由注入）；用户名宽松
+  （不进 subject），1~32 字符，中文/大写合法
+- v0 开放模型：join 自动建档（空间缺 owner = 首进者；频道自动创建）；
+  显式 channel_create 才有 owner/admin 权限门。变更需走 ADR
+
 ## 游标语义（收件箱模型）
 
 - seq 是 `hermes_chat` 流的**全局** stream 序号；同一房间内单调
@@ -56,9 +78,9 @@
 ## 消息流向
 
 ```
-WS(join/msg/leave) → session 进程 → room Actor
-chat:   room ──PUB──► hermes.rooms.lobby ──► JetStream hermes_chat
-        session 的 consumer（filter=hermes.rooms.lobby, deliver_subject=_INBOX.*）
+WS(join/msg/leave) → session 进程 → rooms 管理器（按 <space>.<channel> 惰性 spawn）→ room Actor
+chat:   room ──PUB──► hermes.rooms.<space>.<channel> ──► JetStream hermes_chat
+        session 的 consumer（filter=房间 subject, deliver_subject=_INBOX.*）
         ◄── MSG（subject=原始房间 subject, reply=$JS.ACK...含 seq）──
-presence: room ──PUB──► hermes.presence.lobby ──► bus 内部扇出到各会话
+presence: room ──PUB──► hermes.presence.<space>.<channel> ──► bus 内部扇出到各会话
 ```
