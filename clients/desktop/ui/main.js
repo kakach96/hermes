@@ -51,6 +51,9 @@ function showAuth() {
 }
 
 function showHome() {
+  // 从登录页进来：先关掉覆盖层、亮出外壳
+  $("auth").classList.add("hidden");
+  $("main").classList.remove("hidden");
   $("chat").classList.add("hidden");
   $("home").classList.remove("hidden");
   $("room-tag").classList.add("hidden");
@@ -209,6 +212,7 @@ function handle(ev) {
       enterChannel(ev.space, ev.name);
       break;
     case "joined":
+      showChat();
       renderRoomTag((ev.members || []).length);
       inRoom = true;
       connected = true;
