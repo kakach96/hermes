@@ -49,39 +49,34 @@ pub async fn auth(base: &str, name: &str, register: bool) -> Result<Auth, String
     }
 
     // 2xx：名字落账（HTTP 语义层），WS 地址带上身份
-    let ws_url = format!(
-        "{}://{}:{}/ws?name={}",
-        ws_scheme(base),
-        host_of(base),
-        port_of(base, 80),
-        urlencode(name),
-    );
+    let ws_url = build_ws_url(base, name);
     Ok(Auth {
         name: name.to_string(),
         ws_url,
     })
 }
 
-fn ws_scheme(base: &str) -> &str {
-    // v0 端点都是 http://，直接映射
-    "ws"
+/// 认证通过后的 WS 地址：base 的 authority + /ws + ?name=（encoded）。
+/// 回归注释：曾把 authority（含端口）又拼一遍端口 → ws://host:8080:8080/ws
+/// → tungstenite "invalid authority"。
+fn build_ws_url(base: &str, name: &str) -> String {
+    let (host, port) = authority_of(base);
+    format!("ws://{host}:{port}/ws?name={}", urlencode(name))
 }
 
-fn host_of(base: &str) -> &str {
+/// base → (host, port)。"http://127.0.0.1:8080" → ("127.0.0.1", 8080)。
+/// authority 里没写端口时用协议缺省（http=80）。
+fn authority_of(base: &str) -> (String, u16) {
     let rest = base
         .strip_prefix("http://")
         .or_else(|| base.strip_prefix("https://"))
         .unwrap_or(base);
     // 去掉可能的路径尾巴
     let end = rest.find('/').unwrap_or(rest.len());
-    &rest[..end]
-}
-
-fn port_of(base: &str, default: u16) -> u16 {
-    let host = host_of(base);
-    match host.rsplit_once(':') {
-        Some((_, p)) => p.parse().unwrap_or(default),
-        None => default,
+    let authority = &rest[..end];
+    match authority.rsplit_once(':') {
+        Some((host, p)) => (host.to_string(), p.parse().unwrap_or(80)),
+        None => (authority.to_string(), 80),
     }
 }
 
@@ -116,10 +111,25 @@ mod tests {
     }
 
     #[test]
-    fn host_and_port_parsing() {
-        assert_eq!(host_of("http://127.0.0.1:8080"), "127.0.0.1:8080");
-        assert_eq!(port_of("http://127.0.0.1:8080", 80), 8080);
-        assert_eq!(port_of("http://localhost", 80), 80);
-        assert_eq!(host_of("http://example.com/sub"), "example.com");
+    fn authority_parsing() {
+        assert_eq!(
+            authority_of("http://127.0.0.1:8080"),
+            ("127.0.0.1".into(), 8080)
+        );
+        assert_eq!(authority_of("http://localhost"), ("localhost".into(), 80));
+        assert_eq!(authority_of("http://example.com/sub"), ("example.com".into(), 80));
+    }
+
+    #[test]
+    fn auth_builds_ws_url_without_double_port() {
+        // 回归：曾把 authority（含端口）又拼一遍端口 → invalid authority
+        assert_eq!(
+            build_ws_url("http://127.0.0.1:8080", "kakach"),
+            "ws://127.0.0.1:8080/ws?name=kakach"
+        );
+        assert_eq!(
+            build_ws_url("http://127.0.0.1:8080/", "小 新"),
+            "ws://127.0.0.1:8080/ws?name=%E5%B0%8F%20%E6%96%B0"
+        );
     }
 }
