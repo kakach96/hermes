@@ -10,6 +10,8 @@ let lastSeq = 0;
 let connected = false;
 let myName = "";
 let leaving = false;
+let currentSpace = "lobby";
+let currentChannel = "general";
 
 function backToJoin() {
   $("chat").classList.add("hidden");
@@ -202,8 +204,9 @@ $("connect").onclick = async () => {
       channel: $("channel").value.trim(),
     });
     myName = name;
-    $("room-tag").textContent =
-      `${$("space").value.trim() || "lobby"}/${$("channel").value.trim() || "general"}`;
+    currentSpace = $("space").value.trim() || "lobby";
+    currentChannel = $("channel").value.trim() || "general";
+    $("room-tag").textContent = `${currentSpace}/${currentChannel}`;
     log.innerHTML = "";
     $("join").classList.add("hidden");
     $("chat").classList.remove("hidden");
@@ -225,16 +228,29 @@ $("name").addEventListener("keydown", (e) => {
   if (e.key === "Enter") $("connect").click();
 });
 
-// ---- 空间/频道管理（结果走事件回流渲染；需已连接）----
-$("btn-space-list").onclick = () => invoke("list_spaces").catch((e) => ($("join-error").textContent = String(e)));
-$("btn-space-create").onclick = () =>
-  invoke("create_space", { space: $("space").value.trim() }).catch((e) => ($("join-error").textContent = String(e)));
-$("btn-channel-list").onclick = () =>
-  invoke("list_channels", { space: $("space").value.trim() }).catch((e) => ($("join-error").textContent = String(e)));
-$("btn-channel-create").onclick = () =>
-  invoke("create_channel", { space: $("space").value.trim(), channel: $("channel").value.trim() }).catch(
-    (e) => ($("join-error").textContent = String(e)),
-  );
+// ---- 空间/频道管理（聊天视图内；结果走事件回流渲染到 log）----
+// 管理目标 = 当前所在空间；新名字共用 #new-name 输入框
+// （manage 行在 #chat 内，未入房不可见；再加 connected 双保险）
+$("btn-space-list").onclick = () => {
+  if (connected) invoke("list_spaces");
+};
+$("btn-channel-list").onclick = () => {
+  if (connected) invoke("list_channels", { space: currentSpace });
+};
+$("btn-space-create").onclick = () => {
+  if (!connected) return;
+  const name = $("new-name").value.trim();
+  if (!name) return;
+  $("new-name").value = "";
+  invoke("create_space", { space: name });
+};
+$("btn-channel-create").onclick = () => {
+  if (!connected) return;
+  const name = $("new-name").value.trim();
+  if (!name) return;
+  $("new-name").value = "";
+  invoke("create_channel", { space: currentSpace, channel: name });
+};
 
 function sendCurrent() {
   const text = $("input").value.trim();

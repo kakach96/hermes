@@ -23,12 +23,6 @@
       </div>
       <datalist id="space-list"></datalist>
       <datalist id="channel-list"></datalist>
-      <div class="mini-row">
-        <button id="btn-space-list" class="mini">空间列表</button>
-        <button id="btn-space-create" class="mini">建空间</button>
-        <button id="btn-channel-list" class="mini">频道列表</button>
-        <button id="btn-channel-create" class="mini">建频道</button>
-      </div>
       <button id="connect" class="btn">进入房间</button>
       <div id="join-error" class="join-error"></div>
     </div>
@@ -44,6 +38,15 @@
       <span id="me" class="me"></span>
       <button id="leave" class="leave-btn" title="退出房间（消息与游标都会被记住）">退出</button>
     </header>
+
+    <!-- 空间/频道管理行（已连接才有意义）；新空间/新频道的名字共用一个输入框 -->
+    <div id="manage" class="manage-row">
+      <button id="btn-space-list" class="mini">空间列表</button>
+      <button id="btn-channel-list" class="mini">本空间频道</button>
+      <input id="new-name" class="manage-in" spellcheck="false" placeholder="新空间/频道名" />
+      <button id="btn-space-create" class="mini">建空间</button>
+      <button id="btn-channel-create" class="mini">建频道</button>
+    </div>
 
     <main id="log"></main>
 

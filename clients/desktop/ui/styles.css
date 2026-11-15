@@ -98,6 +98,25 @@ body {
   gap: 8px;
   margin-top: 6px;
 }
+
+/* 聊天视图的空间/频道管理行（连接后才可见可用） */
+.manage-row {
+  display: flex;
+  gap: 8px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  align-items: center;
+}
+.manage-in {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-size: 12px;
+  padding: 4px 2px;
+}
 .mini {
   flex: 1;
   background: transparent;
