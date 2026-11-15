@@ -86,6 +86,8 @@ pub enum ClientEvent {
     Notice { text: String },
     Error { reason: String },
     Disconnected,
+    /// 在线名单变化（presence 快照活水）——视图层用它刷新实时人数
+    MembersChanged { members: Vec<String> },
     /// 空间/频道目录（视图层管展示，core 不缓存）
     SpaceList { spaces: Vec<SpaceEntry> },
     SpaceCreated { name: String },

@@ -97,14 +97,24 @@ async function startListen() {
   }
 }
 
+function renderRoomTag(count) {
+  $("room-tag").textContent =
+    `${currentSpace}/${currentChannel}` + (count != null ? ` · ${count}人在` : "");
+}
+
 function handle(ev) {
   switch (ev.type) {
     case "joined":
       addLine("notice", `已进入房间 · ${(ev.members || []).length} 人在线`);
+      renderRoomTag((ev.members || []).length);
       connected = true;
       $("input").disabled = false;
       $("send").disabled = false;
       $("input").focus();
+      break;
+    case "members_changed":
+      // 名单活水：实时人数跟随 presence 快照，不再停在入房那一刻
+      renderRoomTag((ev.members || []).length);
       break;
     case "chat":
       addRow(ev.from, ev.text, ev.from === myName);
@@ -193,6 +203,12 @@ $("connect").onclick = async () => {
   }
   $("join-error").textContent = "";
   $("connect").disabled = true;
+  // 日志先清再连：事件桥可能在 invoke 返回前就开始推帧
+  //（后清会把刚到的 joined/通知一起抹掉——第三窗口"消息凭空消失"的坑）
+  log.innerHTML = "";
+  // 空间/频道在点击时就锁定：joined 事件可能抢在 invoke 返回前到达
+  currentSpace = $("space").value.trim() || "lobby";
+  currentChannel = $("channel").value.trim() || "general";
   try {
     // cursor 用设备记住的 lastSeq（重连补投的钥匙）；
     // 空间/频道随 join 下发（不存在则服务端自动建档，首进者即 owner）
@@ -204,9 +220,6 @@ $("connect").onclick = async () => {
       channel: $("channel").value.trim(),
     });
     myName = name;
-    currentSpace = $("space").value.trim() || "lobby";
-    currentChannel = $("channel").value.trim() || "general";
-    $("room-tag").textContent = `${currentSpace}/${currentChannel}`;
     log.innerHTML = "";
     $("join").classList.add("hidden");
     $("chat").classList.remove("hidden");

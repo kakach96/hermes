@@ -44,3 +44,6 @@ clients/desktop/src-tauri/gen/schemas/
 # ---------- ProVerif 杈撳嚭 ----------
 *.pv.out
 attack*.trace
+
+# erl 一次性工具编译产物
+tools/ebin/

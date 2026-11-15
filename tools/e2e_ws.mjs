@@ -10,6 +10,10 @@
 
 const URL = "ws://127.0.0.1:8080/ws";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// 每轮用独立随机空间：不污染真实房间（残留会被新设备从头重放），
+// 也保证本轮内游标语义自洽（见文末三个重连检查）
+const SPACE = "e2etest-" + crypto.randomUUID().replaceAll("-", "").slice(0, 10);
+const CHANNEL = "general";
 
 function connect(name, cursor) {
   return new Promise((resolve, reject) => {
@@ -21,7 +25,7 @@ function connect(name, cursor) {
       console.log(`[${name}] <- ${e.data}`);
     };
     ws.onopen = () => {
-      ws.send(JSON.stringify({ type: "join", name, cursor }));
+      ws.send(JSON.stringify({ type: "join", name, cursor, space: SPACE, channel: CHANNEL }));
       resolve(ws);
     };
     ws.onerror = (e) => reject(new Error("连接失败: " + e.message));
