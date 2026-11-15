@@ -193,6 +193,7 @@ function handle(ev) {
     case "logged_in":
       myName = ev.name;
       $("user-btn").textContent = ev.name;
+      log.innerHTML = ""; // 新会话新日志（事件可能抢在连接前到，先清防残影）
       showHome();
       break;
     case "space_list":
@@ -281,30 +282,36 @@ window.addEventListener("error", (e) => {
   showFatal("错误: " + e.message);
 });
 
-// ---------- 登录 ----------
+// ---------- 登录 / 注册（HTTP 平面） ----------
 
-$("login").onclick = async () => {
-  const url = $("url").value.trim();
+async function doAuth(register) {
+  const base = $("base").value.trim();
   const name = $("name").value.trim();
-  if (!url || !name) {
+  if (!base || !name) {
     $("auth-error").textContent = "地址和名字都要填";
     return;
   }
   $("auth-error").textContent = "";
-  $("login").disabled = true;
+  $("login-btn").disabled = true;
+  $("register-btn").disabled = true;
   try {
-    await invoke("connect", { url });
-    await invoke("login", { name });
-    // logged_in 事件负责切到大厅
+    // ① HTTP 认证（core 内发请求）→ 返回带 ?name= 的 WS 地址
+    const wsUrl = await invoke("auth", { base, name, register });
+    // ② 连 WS（server 升级即登录，回 logged_in 事件切大厅）
+    await invoke("connect", { url: wsUrl, name });
   } catch (e) {
     $("auth-error").textContent = String(e).replace(/^"|"$/g, "");
   } finally {
-    $("login").disabled = false;
+    $("login-btn").disabled = false;
+    $("register-btn").disabled = false;
   }
-};
+}
+
+$("login-btn").onclick = () => doAuth(false);
+$("register-btn").onclick = () => doAuth(true);
 
 $("name").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") $("login").click();
+  if (e.key === "Enter") doAuth(false);
 });
 
 // ---------- 大厅操作 ----------

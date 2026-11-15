@@ -18,12 +18,14 @@ struct Session {
 
 struct AppState(Mutex<Option<Session>>);
 
-/// 建立 WS 连接（不登录不进房）。之后所有服务端事件经 "hermes" 事件推给窗口。
+/// 建立 WS 连接（身份已在 URL ?name= 里，由 http::auth 认证后生成）。
+/// 之后所有服务端事件经 "hermes" 事件推给窗口。
 #[tauri::command]
 async fn connect(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     url: String,
+    name: String,
 ) -> Result<(), String> {
     // 先断旧的（重复连接时）
     if let Some(old) = state.0.lock().unwrap().take() {
@@ -38,8 +40,8 @@ async fn connect(
         .unwrap_or_else(|_| ".".into());
     std::fs::create_dir_all(&keys_dir).ok();
 
-    let (handle, mut events) = hermes_core::connect(&url, &keys_dir).await?;
-    *state.0.lock().unwrap() = Some(Session { handle, name: String::new() });
+    let (handle, mut events) = hermes_core::connect(&url, &keys_dir, &name).await?;
+    *state.0.lock().unwrap() = Some(Session { handle, name });
 
     let emitter = app.clone();
     tokio::spawn(async move {
@@ -50,17 +52,12 @@ async fn connect(
     Ok(())
 }
 
+/// HTTP 平面认证：登录（register=false）/ 注册（register=true）。
+/// 成功返回带 ?name= 的 WS 地址，交给 connect。
 #[tauri::command]
-fn login(state: State<'_, AppState>, name: String) -> Result<(), String> {
-    let mut guard = state.0.lock().unwrap();
-    match guard.as_mut() {
-        Some(s) => {
-            s.handle.login(name.clone());
-            s.name = name;
-            Ok(())
-        }
-        None => Err("未连接".into()),
-    }
+async fn auth(base: String, name: String, register: bool) -> Result<String, String> {
+    let a = hermes_core::auth(&base, &name, register).await?;
+    Ok(a.ws_url)
 }
 
 #[tauri::command]
@@ -160,7 +157,7 @@ fn main() {
     tauri::Builder::default()
         .manage(AppState(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
-            connect, login, join_room, leave_room, logout, send_message,
+            connect, auth, join_room, leave_room, logout, send_message,
             create_space, list_spaces, create_channel, list_channels
         ])
         .run(tauri::generate_context!())

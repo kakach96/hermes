@@ -106,6 +106,23 @@ pub fn user_touch(store: Store, name: String) -> Result(Nil, String) {
   }
 }
 
+/// 注册：存在即拒绝（区别于幂等的 user_touch——注册有明确语义）。
+pub fn user_exists(store: Store, name: String) -> Result(Bool, String) {
+  case store.ks_get(store, "users", user_key(name)) {
+    Ok(option.Some(_)) -> Ok(True)
+    Ok(option.None) -> Ok(False)
+    Error(reason) -> Error(reason)
+  }
+}
+
+pub fn user_register(store: Store, name: String) -> Result(Nil, String) {
+  case user_exists(store, name) {
+    Ok(True) -> Error("用户已存在: " <> name)
+    Ok(False) -> user_touch(store, name)
+    Error(reason) -> Error(reason)
+  }
+}
+
 // ---------- 空间 ----------
 
 /// 建空间（幂等拒绝重复）。创建者即 owner，写 perms 与 members。

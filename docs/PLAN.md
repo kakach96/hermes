@@ -46,6 +46,7 @@ core 内置 libsignal 会话（加密里程碑见 M6）。
 | M6 | crypto：libsignal 会话建立 + 端到端密文 | ✅ 三端实测：加密互聊、名单活水、本地回显、游标补投 |
 | M7 | 空间/频道：fjall 多 keyspace 元数据（users/spaces/channels/members/perms）+ 动态房间管理器 | ✅ e2e 8 项全绿 + 旧 lobby 兼容回归通过 |
 | M7.5 | 登录/大厅三段式：login 帧与会话身份、leave 语义改为离房不断连、GUI 登录页 + 空间/频道大厅 | ✅ e2e_home 10 项全绿 + 全量回归 |
+| M8 | HTTP 认证平面：mist 复用为 REST（/v1/register|login|spaces|channels），WS ?name= 升级即登录，core http.rs + reqwest（无 TLS） | ✅ e2e_auth 12 项全绿 + 全量回归 |
 
 v0 明确**不做**（留给第二轮）：树状 fanout、QUIC、UniFFI、iOS/Android 视图、
 ProVerif、RocksDB。任何文档冲突以本表为准。

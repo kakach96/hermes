@@ -10,8 +10,10 @@
 
 pub mod codec;
 pub mod crypto;
+pub mod http;
 pub mod idempotency;
 pub mod transport;
 
 pub use codec::{ClientEvent, ClientFrame, ServerFrame};
+pub use http::{auth, Auth};
 pub use transport::{connect, Handle};

@@ -83,6 +83,8 @@ type ClientCmd {
 }
 
 /// 把 HTTP 请求升级为 WebSocket 会话。
+/// ?name=<用户名> 查询参数即身份：升级即登录（HTTP 平面认证过的客户端
+/// 把名字带进来），回 logged_in 帧；不带则保持未登录（裸工具 join 兜底）。
 pub fn upgrade(
   req: request.Request(mist.Connection),
   bus: Subject(bus.BusMsg),
@@ -90,9 +92,18 @@ pub fn upgrade(
   storage: store.Store,
   registry: Subject(registry.RegistryMsg),
 ) -> response.Response(mist.ResponseData) {
+  let identity = identity_from_query(req)
+  let initial_name = case identity {
+    // 身份合法性已在 identity_from_query 校验过；这里建档（幂等）
+    "" -> ""
+    name -> {
+      let _ = meta.user_touch(storage, name)
+      name
+    }
+  }
   mist.websocket(
     request: req,
-    on_init: fn(_ws_conn) {
+    on_init: fn(ws_conn) {
       let ws_subject = process.new_subject()
       let state =
         State(
@@ -105,13 +116,21 @@ pub fn upgrade(
           room_subject: "",
           presence_subject: "",
           room: option.None,
-          name: "",
+          name: initial_name,
           chat_token: "",
           presence_token: "",
           cursor_key: "",
           cursor: 0,
           ws_subject: ws_subject,
         )
+      // 查询参数带来的身份：立刻回执（大厅页无需再发 login 帧）
+      case initial_name {
+        "" -> Nil
+        name -> {
+          let _ = mist.send_text_frame(ws_conn, logged_in_json(name))
+          Nil
+        }
+      }
       let selector =
         process.new_selector()
         |> process.select(ws_subject)
@@ -120,6 +139,34 @@ pub fn upgrade(
     handler: handle,
     on_close: close,
   )
+}
+
+/// 从升级请求的 ?name= 查询参数取会话身份。
+/// 空串/缺参/非法名 = 未登录（裸工具用 join 帧隐式登录兜底）。
+fn identity_from_query(req: request.Request(mist.Connection)) -> String {
+  case request.get_query(req) {
+    Error(_) -> ""
+    Ok(pairs) ->
+      case find_pair(pairs, "name") {
+        Ok(name) ->
+          case meta.check_user(name) {
+            Ok(_) -> name
+            Error(_) -> ""
+          }
+        Error(Nil) -> ""
+      }
+  }
+}
+
+fn find_pair(pairs: List(#(String, String)), key: String) -> Result(String, Nil) {
+  case pairs {
+    [] -> Error(Nil)
+    [#(k, v), ..rest] ->
+      case k == key {
+        True -> Ok(v)
+        False -> find_pair(rest, key)
+      }
+  }
 }
 
 fn handle(

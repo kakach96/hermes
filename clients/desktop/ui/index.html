@@ -13,9 +13,12 @@
     <div class="card">
       <div class="wordmark">hermes<span class="dot"></span></div>
       <div class="card-sub">beamed messages, no noise</div>
-      <input id="url" class="field" spellcheck="false" value="ws://127.0.0.1:8080/ws" />
-      <input id="name" class="field" spellcheck="false" placeholder="你的名字（新名字 = 自动注册）" autofocus />
-      <button id="login" class="btn">登录 / 注册</button>
+      <input id="base" class="field" spellcheck="false" value="http://127.0.0.1:8080" />
+      <input id="name" class="field" spellcheck="false" placeholder="你的名字（新名字 = 注册）" autofocus />
+      <div class="auth-row">
+        <button id="login-btn" class="btn half">登录</button>
+        <button id="register-btn" class="btn half">注册</button>
+      </div>
       <div id="auth-error" class="join-error"></div>
     </div>
   </div>

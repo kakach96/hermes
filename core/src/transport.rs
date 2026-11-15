@@ -82,9 +82,12 @@ impl Handle {
 
 /// 建立 WS 连接并起会话任务（内含 crypto 线程的编排逻辑）。
 /// 事件经 mpsc 交给渲染层桥（如 Tauri emit）。
+/// name：HTTP 平面（http::auth）认证过的身份；WS URL 已带 ?name=，
+/// server 升级即登录。空串 = 未登录（裸工具 join 隐式登录兜底）。
 pub async fn connect(
     url: &str,
     keys_dir: &str,
+    name: &str,
 ) -> Result<(Handle, mpsc::UnboundedReceiver<ClientEvent>), String> {
     let (ws, _resp) = tokio_tungstenite::connect_async(url)
         .await
@@ -92,6 +95,11 @@ pub async fn connect(
 
     // crypto 线程：明文/密文转换全部发生在那条线程里，密钥不出界
     let (crypto_tx, mut crypto_rx) = crypto::spawn(keys_dir.to_string());
+    // HTTP 认证过的身份：立刻初始化密钥套件（Registered → 自动 prekey_register）
+    let name = name.to_string();
+    if !name.is_empty() {
+        let _ = crypto_tx.send(CryptoCmd::Init { name: name.clone() });
+    }
 
     let (mut sink, mut stream) = ws.split();
     let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<ClientFrame>();
@@ -103,6 +111,7 @@ pub async fn connect(
         let mut seen = Bloom::new(1 << 20);
         let mut joined = false;
         let mut me = String::new();
+        let mut crypto_inited = !name.is_empty();
         let mut members: Vec<String> = Vec::new();
         let mut established: HashSet<String> = HashSet::new();
         // 已发出 prekey_fetch、尚无结果的成员（防止重复刷请求）
@@ -131,8 +140,11 @@ pub async fn connect(
                         }
                         ClientFrame::Login { name } => {
                             me = name.clone();
-                            // crypto 初始化：加载/生成本名身份与 prekey 套件
-                            let _ = crypto_tx.send(CryptoCmd::Init { name });
+                            if !crypto_inited {
+                                crypto_inited = true;
+                                // crypto 初始化：加载/生成本名身份与 prekey 套件
+                                let _ = crypto_tx.send(CryptoCmd::Init { name });
+                            }
                             if sink
                                 .send(Message::text(ClientFrame::Login { name: me.clone() }.to_json()))
                                 .await
@@ -143,10 +155,15 @@ pub async fn connect(
                             }
                         }
                         ClientFrame::Join { name, cursor: c, space, channel } => {
-                            // GUI 已 login（me 已定）；裸工具 join 即隐式登录
+                            // GUI 已登录（URL 带 ?name=，me 由 join 帧补上）；
+                            // 裸工具 join 即隐式登录。crypto 只允许初始化一次——
+                            // 重复 Init 会重置 ratchet 会话（会话状态不持久化）
                             if me.is_empty() {
                                 me = name.clone();
-                                let _ = crypto_tx.send(CryptoCmd::Init { name });
+                            }
+                            if !crypto_inited {
+                                crypto_inited = true;
+                                let _ = crypto_tx.send(CryptoCmd::Init { name: me.clone() });
                             }
                             let join_frame = ClientFrame::Join {
                                 name: me.clone(),

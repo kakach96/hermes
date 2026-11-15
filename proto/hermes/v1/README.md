@@ -6,12 +6,27 @@
 
 ## 载体
 
-- 客户端 ↔ server：WebSocket 文本帧，`ws://host:8080/ws`
+- 客户端 ↔ server：**双平面**。认证与只读目录走 HTTP（`/v1/*`，见下），
+  实时消息走 WebSocket 文本帧 `ws://host:8080/ws?name=<用户名>`
+  （`?name=` 即会话身份，升级即登录并回 `logged_in` 帧；不带则未登录）
 - server 内部 ↔ NATS：`hermes.rooms.<space>.<channel>` 聊天（进 JetStream 流
   `hermes_chat`，流订 `hermes.rooms.>` 前缀），`hermes.presence.<space>.<channel>`
   在线通知（不进流）。v1 单房间 = space 缺省（见 M7 一节）
 - 房间 subject 里流转的信封 **不带 seq**：seq 存在于 JetStream 投递的
   `$JS.ACK` 回执中（第 6 个点分段），由 bus 解出后加到 WS 帧上
+
+## HTTP 平面（M8，认证 + 只读目录）
+
+| 方法与路径 | body | 语义 |
+| --- | --- | --- |
+| `POST /v1/register` | `{name}` | 注册：201 `{name}`；已存在 409；非法名 400 |
+| `POST /v1/login` | `{name}` | 登录：200 `{name}`；不存在 401 |
+| `GET /v1/spaces` | — | 200 `{spaces:[{name,owner}]}` |
+| `GET /v1/spaces/:space/channels` | — | 200 `{space, channels:[]}` |
+
+- v0 无密码：名字即账号（服务端 users 建档 + 客户端本地身份密钥持久化）；
+  密码/令牌留给多端同步阶段
+- `login` WS 帧仍保留（裸工具兼容路径），GUI 走 HTTP 认证后连 WS 不再发它
 
 ## 客户端 → 服务端（WS 文本帧）
 
