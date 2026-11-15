@@ -26,7 +26,10 @@ function backToJoin() {
 async function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;
   localStorage.setItem("hermes-theme", theme);
-  $("theme").textContent = theme === "light" ? "☾" : "☀";
+  // 两处入口同步：入房卡片的固定按钮 + 聊天视图的用户菜单项
+  const icon = theme === "light" ? "☾" : "☀";
+  $("theme").textContent = icon;
+  $("theme-item").textContent = `${icon} 切换主题`;
   try {
     await window.__TAURI__.window.getCurrentWindow().setTheme(theme);
   } catch {
@@ -98,8 +101,11 @@ async function startListen() {
 }
 
 function renderRoomTag(count) {
-  $("room-tag").textContent =
+  const text =
     `${currentSpace}/${currentChannel}` + (count != null ? ` · ${count}人在` : "");
+  const tag = $("room-tag");
+  tag.textContent = text;
+  tag.title = text; // 截断时悬停看全名
 }
 
 function handle(ev) {
@@ -220,11 +226,11 @@ $("connect").onclick = async () => {
       channel: $("channel").value.trim(),
     });
     myName = name;
+    $("user-btn").textContent = name;
     log.innerHTML = "";
     $("join").classList.add("hidden");
     $("chat").classList.remove("hidden");
-    $("me").textContent = name;
-    // 3 秒内没等到 joined = 桥有问题，明确说出来而不是干等
+    $("user-btn").textContent = name;    // 3 秒内没等到 joined = 桥有问题，明确说出来而不是干等
     setTimeout(() => {
       if (!connected) {
         addLine("err", "3 秒未收到入房回执 —— 检查 server 是否在跑");
@@ -273,8 +279,9 @@ function sendCurrent() {
 }
 
 // 退出房间：主动走 leave 帧（server 会清名册），游标两边都记着，
-// 重进（哪怕换空间/频道）都不丢消息
-$("leave").onclick = () => {
+// 重进（哪怕换空间/频道）都不丢消息。入口在用户名弹窗里。
+$("leave-item").onclick = () => {
+  closeUserMenu();
   if (!connected) return;
   leaving = true;
   invoke("disconnect").catch((e) => {
@@ -282,6 +289,26 @@ $("leave").onclick = () => {
     addLine("err", "退出失败: " + e);
   });
 };
+
+// ---- 用户名弹窗 ----
+function closeUserMenu() {
+  $("user-menu").classList.add("hidden");
+}
+$("user-btn").onclick = (e) => {
+  e.stopPropagation();
+  $("user-menu").classList.toggle("hidden");
+};
+$("theme-item").onclick = () => {
+  applyTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light");
+};
+// 点弹窗外任意处关闭
+document.addEventListener("click", (e) => {
+  if (!$("user-menu").classList.contains("hidden")) {
+    const inMenu = $("user-menu").contains(e.target);
+    const onBtn = $("user-btn").contains(e.target);
+    if (!inMenu && !onBtn) closeUserMenu();
+  }
+});
 
 $("send").onclick = sendCurrent;
 $("input").addEventListener("keydown", (e) => {
