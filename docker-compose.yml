@@ -1,0 +1,48 @@
+# 赫尔墨斯 v0 —— Linux 部署（Docker Compose）。
+#
+# 用法（仓库根）：
+#   docker compose up --build -d      # 起 NATS + server
+#   docker compose logs -f hermes
+#   docker compose down               # 停（数据在 named volumes 里）
+#
+# 与 Windows 开发形态的关系：
+# - 本机开发：infra\nats-server.exe（仓库内单二进制，tag 锁 v2.15.3）
+# - Linux 部署：官方 nats 镜像（tag 同样锁 v2.15.3）—— 平台差异交给镜像，
+#   版本纪律不变（infra/README.md 是版本事实来源）
+#
+# 客户端连 http://<主机>:8080（HTTP 认证平面）与 ws://<主机>:8080/ws。
+
+services:
+  nats:
+    image: nats:2.15.3-alpine
+    command: ["-c", "/etc/nats/nats.conf"]
+    volumes:
+      - ./infra/nats.docker.conf:/etc/nats/nats.conf:ro
+      - nats-data:/data
+    restart: unless-stopped
+
+  hermes:
+    build:
+      context: .
+      args:
+        # 本机已有该镜像缓存（1.56GB，bookworm = Debian 12，与运行时同 libc），
+        # 免拉 rust:1-slim。换机器可删掉这两行回落官方默认
+        RUST_IMAGE: rust:1.95-bookworm
+    environment:
+      # Dockerfile 已设默认值，这里显式声明便于覆盖
+      - HERMES_NATS_HOST=nats
+      - HERMES_NATS_PORT=4222
+      - HERMES_STORAGE_EXE=/usr/local/bin/hermes-storage
+      - HERMES_DATA_DIR=/data/storage
+    ports:
+      - "8080:8080"
+    volumes:
+      - hermes-storage:/data/storage
+    depends_on:
+      - nats
+    # NATS 未就绪时 server 会启动失败退出，靠重启策略收敛（v0 无重试）
+    restart: unless-stopped
+
+volumes:
+  nats-data:
+  hermes-storage:

@@ -21,6 +21,8 @@
 ```
 hermes/                             # 仓库根 = monorepo 根
 ├── AGENTS.md                       # 项目宪法：规则与索引，不放实现细节
+├── Dockerfile                      # [M9] server 镜像：sidecar + shipment 多阶段构建
+├── docker-compose.yml              # [M9] Linux 部署（NATS 官方镜像 + hermes）
 ├── README.md                       # 快速上手（中文）
 ├── README.en.md                    # 快速上手（English，与 README.md 同步维护）
 ├── docs/

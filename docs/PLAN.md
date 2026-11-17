@@ -47,6 +47,7 @@ core 内置 libsignal 会话（加密里程碑见 M6）。
 | M7 | 空间/频道：fjall 多 keyspace 元数据（users/spaces/channels/members/perms）+ 动态房间管理器 | ✅ e2e 8 项全绿 + 旧 lobby 兼容回归通过 |
 | M7.5 | 登录/大厅三段式：login 帧与会话身份、leave 语义改为离房不断连、GUI 登录页 + 空间/频道大厅 | ✅ e2e_home 10 项全绿 + 全量回归 |
 | M8 | HTTP 认证平面：mist 复用为 REST（/v1/register|login|spaces|channels），WS ?name= 升级即登录，core http.rs + reqwest（无 TLS） | ✅ e2e_auth 12 项全绿 + 全量回归 |
+| M9 | Docker 部署：多阶段镜像（sidecar/shipment/erlang:29-slim）、compose + 官方 NATS 镜像（tag 锁 2.15.3）、server 环境变量覆盖（NATS 地址/sidecar 路径/数据目录） | ✅ 容器化栈四套 e2e 全绿 |
 
 v0 明确**不做**（留给第二轮）：树状 fanout、QUIC、UniFFI、iOS/Android 视图、
 ProVerif、RocksDB。任何文档冲突以本表为准。
@@ -141,3 +142,6 @@ ProVerif、RocksDB。任何文档冲突以本表为准。
 | M7 | `process.new_name` 每个新频道一个唯一原子 | 有界低频（频道首次有人进那一刻），不是热循环，可接受；频道量级大了要换 gproc 式寻址（已记入 rooms.gleam 注释） |
 | M7 | `hermes_ffi:unique_inbox` 输出**大写**十六进制，测试实体名拼进去全被小写校验拒绝 | 测试名一律 `string.lowercase(unique_inbox(...))` |
 | M7 | StartError 是 opaque 类型，不能 <> 拼接 | 归一化成字符串时丢细节换可用性（rooms.gleam） |
+| M9 | Docker Hub/ghcr 直拉仅 ~100KB/s，且杀构建不续传已下载的层 | ghcr 走 `ghcr.nju.edu.cn` 代理、docker hub 走 `docker.1ms.run`，拉完 `docker tag` 回官方名（buildkit 见本地同 digest 镜像即跳过拉取）；daocloud 对 ghcr 有白名单、南大不放行 docker hub，通道要备多个 |
+| M9 | `docker compose down` 后立刻重启本机 server 报 Eaddrinuse | 端口映射释放有延迟，等几秒重试即可（hermes.cmd up 的探测会自愈） |
+| M9 | PowerShell 管道 `docker build ... \| Select-Object -Last N` 把全部输出缓冲到结束 | 后台任务要直写日志文件（`cmd /c "... > x.log 2>&1"`），别过 Select-Object |

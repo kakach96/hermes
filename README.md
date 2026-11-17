@@ -23,8 +23,13 @@ core（Rust）= 客户端唯一逻辑所在（传输/游标/Bloom 幂等/libsign
 依赖：Erlang/OTP 26+、Gleam 1.x、Rust stable（msvc）、Node 18+（仅客户端构建需要）、rebar3。
 （本机工具链不在系统 PATH 时，启动脚本会自动探测并前置。）
 
+Linux/Docker 部署（server + 存储 sidecar + NATS 全容器化，NATS 用官方镜像按 tag 锁版本）：
+
 ```sh
-# 一键起停（自动探测端口，已在跑的跳过；进程脱离终端，关终端不影响）
+docker compose up --build -d
+```
+
+Windows 本机开发（一键起停：自动探测端口，已在跑的跳过；进程脱离终端，关终端不影响）：
 scripts\hermes.cmd up        # NATS + 存储 sidecar 构建 + server
 scripts\hermes.cmd client    # 开一个客户端窗口（再执行一次 = 多开）
 scripts\hermes.cmd status    # 端口与进程状态

@@ -9,7 +9,7 @@
 -module(hermes_ffi).
 
 -export([connect/3, close/1, conn_pid/1, subscribe/2, unsubscribe/2,
-         publish/3, request/4, unique_inbox/1]).
+         publish/3, request/4, unique_inbox/1, getenv/1]).
 
 %% --- 连接管理 ---------------------------------------------------------------
 
@@ -228,3 +228,11 @@ request(Conn, Subject, Payload, Timeout) ->
 unique_inbox(Prefix) ->
     Rand = binary:encode_hex(crypto:strong_rand_bytes(6)),
     <<Prefix/binary, Rand/binary, (integer_to_binary(erlang:unique_integer([positive])))/binary>>.
+
+%% Env var lookup (deploy overrides: sidecar path / data dir / NATS address).
+%% Unset -> error; the Gleam side falls back to compile-time defaults.
+getenv(Name) ->
+    case os:getenv(binary_to_list(Name)) of
+        false -> {error, nil};
+        Value -> {ok, unicode:characters_to_binary(Value)}
+    end.

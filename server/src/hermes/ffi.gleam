@@ -51,3 +51,8 @@ pub fn request(
 /// 生成唯一字符串（基于 erlang:unique_integer，不烧原子表）
 @external(erlang, "hermes_ffi", "unique_inbox")
 pub fn unique_inbox(prefix: String) -> String
+
+/// 环境变量读取（部署覆盖：sidecar 路径 / 数据目录 / NATS 地址）。
+/// 未设置 = Error(Nil)，调用方回落编译期默认。
+@external(erlang, "hermes_ffi", "getenv")
+pub fn getenv(name: String) -> Result(String, Nil)

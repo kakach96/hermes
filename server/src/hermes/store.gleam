@@ -19,11 +19,29 @@ import gleam/option.{type Option}
 import gleam/otp/actor
 import gleam/otp/supervision
 
-/// sidecar 可执行文件（相对 server/ 工作目录）
+import hermes/ffi
+
+/// sidecar 可执行文件默认路径（相对 server/ 工作目录）。
+/// Docker/Linux 部署用 HERMES_STORAGE_EXE 覆盖（无 .exe 后缀）。
 pub const sidecar_exe = "../storage/target/release/hermes-storage.exe"
 
-/// 数据目录（相对 server/ 工作目录）
+/// 数据目录默认（相对 server/ 工作目录）。部署用 HERMES_DATA_DIR 覆盖。
 pub const data_dir = "../storage-data"
+
+/// 部署覆盖：环境变量优先，编译期默认兜底
+pub fn resolve_sidecar_exe() -> String {
+  case ffi.getenv("HERMES_STORAGE_EXE") {
+    Ok(path) -> path
+    Error(Nil) -> sidecar_exe
+  }
+}
+
+pub fn resolve_data_dir() -> String {
+  case ffi.getenv("HERMES_DATA_DIR") {
+    Ok(dir) -> dir
+    Error(Nil) -> data_dir
+  }
+}
 
 pub type StorePort
 
@@ -67,7 +85,9 @@ type Resp {
 }
 
 pub fn supervised(name: Name(StoreMsg)) -> supervision.ChildSpecification(Store) {
-  supervision.worker(fn() { start(name, sidecar_exe, data_dir) })
+  supervision.worker(fn() {
+    start(name, resolve_sidecar_exe(), resolve_data_dir())
+  })
 }
 
 pub fn start(

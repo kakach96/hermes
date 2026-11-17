@@ -27,8 +27,15 @@ Prerequisites: Erlang/OTP 26+, Gleam 1.x, Rust stable (msvc), Node 18+
 (client build only), rebar3. (The launcher probes and prepends a local
 toolchain when it is not on the system PATH.)
 
+Linux/Docker deployment (server + storage sidecar + NATS fully containerized;
+NATS uses the official image, version-locked by tag):
+
 ```sh
-# One-command lifecycle (port probing, skip-if-running; processes are detached)
+docker compose up --build -d
+```
+
+Windows local development (one-command lifecycle: port probing,
+skip-if-running; processes are detached):
 scripts\hermes.cmd up        # NATS + build storage sidecar + server
 scripts\hermes.cmd client    # open one client window (repeat to open more)
 scripts\hermes.cmd status    # ports & processes
