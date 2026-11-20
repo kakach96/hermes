@@ -13,6 +13,7 @@ pub mod crypto;
 pub mod http;
 pub mod idempotency;
 pub mod transport;
+pub mod vault;
 
 pub use codec::{ClientEvent, ClientFrame, ServerFrame};
 pub use http::{auth, Auth};

@@ -314,8 +314,9 @@ async function doAuth(register) {
   try {
     // ① HTTP 认证（core 内发请求）→ 返回带 ?token= 的 WS 地址
     const wsUrl = await invoke("auth", { base, name, password, register });
-    // ② 连 WS（server 升级即登录，回 logged_in 事件切大厅）
-    await invoke("connect", { url: wsUrl, name });
+    // ② 连 WS（server 升级即登录，回 logged_in 事件切大厅）。
+    //    密码只借道一次：crypto 线程用它派生静态加密 KEK
+    await invoke("connect", { url: wsUrl, name, password });
     // 登录成功即清密码框（不留痕）
     $("password").value = "";
   } catch (e) {

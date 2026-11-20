@@ -82,19 +82,21 @@ impl Handle {
 
 /// 建立 WS 连接并起会话任务（内含 crypto 线程的编排逻辑）。
 /// 事件经 mpsc 交给渲染层桥（如 Tauri emit）。
-/// name：HTTP 平面（http::auth）认证过的身份；WS URL 已带 ?name=，
+/// name：HTTP 平面（http::auth）认证过的身份；WS URL 已带 ?token=，
 /// server 升级即登录。空串 = 未登录（裸工具 join 隐式登录兜底）。
+/// password：登录密码——只用于派生静态加密 KEK（Argon2id），不落盘。
 pub async fn connect(
     url: &str,
     keys_dir: &str,
     name: &str,
+    password: &str,
 ) -> Result<(Handle, mpsc::UnboundedReceiver<ClientEvent>), String> {
     let (ws, _resp) = tokio_tungstenite::connect_async(url)
         .await
         .map_err(|e| format!("连接失败: {e}"))?;
 
     // crypto 线程：明文/密文转换全部发生在那条线程里，密钥不出界
-    let (crypto_tx, mut crypto_rx) = crypto::spawn(keys_dir.to_string());
+    let (crypto_tx, mut crypto_rx) = crypto::spawn(keys_dir.to_string(), password.to_string());
     // HTTP 认证过的身份：立刻初始化密钥套件（Registered → 自动 prekey_register）
     let name = name.to_string();
     if !name.is_empty() {

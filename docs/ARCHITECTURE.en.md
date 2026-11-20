@@ -120,7 +120,7 @@ reconnect join{cursor} ──► session starts a JetStream ordered consumer
 
 - Algorithms: official libsignal (Rust), X3DH/PQXDH + double ratchet;
   **rolling our own protocol is forbidden** (constitution).
-- Identity keys persist across restarts (same name = same identity, forever),
+- Identity keys and session state persist across restarts; at rest they are AES-256-GCM envelopes with the KEK derived from the login password (Argon2id)
   stored as plain JSON (v0 boundary; at-rest encryption is round 2).
 - Ratchet session state IS persisted (sessions_<name>.json): ciphertexts from before a restart still decrypt; keys and sessions remain plaintext at rest for now (at-rest encryption is P0-2).
   offline gaps may fall outside the window and fail to decrypt (known v0 edge).

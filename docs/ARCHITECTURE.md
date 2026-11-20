@@ -109,7 +109,7 @@ storage:
 | `enc{to, body, dedup_id}` | C→S→C | 密文信封，server 不透明转发 |
 
 - 算法：官方 libsignal Rust 实现，X3DH/PQXDH + 双棘轮；**禁止自研加密协议**（宪法）。
-- 身份密钥跨重启持久化（同名 = 永远同一身份），明文 JSON 落盘（v0 边界，静态加密在第二轮）。
+- 身份密钥与会话状态跨重启持久化；落盘为 AES-256-GCM 信封，KEK 由登录密码派生（Argon2id）
 - 会话（ratchet）状态已持久化（sessions_<name>.json）：重启后重放窗口内的旧密文依然可解；密钥与会话目前仍是明文落盘，静态加密是 P0-2。
 
 ## 五、关键语义约束（变更需走 ADR）

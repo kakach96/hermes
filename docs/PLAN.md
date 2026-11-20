@@ -53,6 +53,7 @@ core 内置 libsignal 会话（加密里程碑见 M6）。
 | M12 | P0-1 修复续：Establish 改 ensure-session（存量会话 + 身份键未变则保留，防 X3DH 覆盖）；Logout 补发 Disconnected 事件 | ✅ reestablish_preserves_session 回归 + e2e 离房补投检查 |
 | M13 | 离线消息根修：加密目标从"在线名册"改为"空间持久成员"（joined.targets，fjall members 域），离线成员也有密文落流、重进按游标补投 | ✅ 四套 e2e 全绿 |
 | M14 | 密码认证：PBKDF2-HMAC-SHA256（OTP BIF，60 万轮）+ 恒时比较；一次性令牌桥（HTTP 签发 → WS ?token= 消费即删）；错误机器码（exists/bad_password/no_password/weak_password…）；老账号用注册认领设密 | ✅ e2e_auth 10 项全绿 + 全量回归 |
+| M15 | P0-2 密钥静态加密：Argon2id(登录密码)→KEK + AES-256-GCM 信封（keys_*/sessions_*）；透明迁移老明文文件；错密码 Init 必败 | ✅ core 21/21（信封落盘/迁移/错密码回归） |
 
 v0 明确**不做**（留给第二轮）：树状 fanout、QUIC、UniFFI、iOS/Android 视图、
 ProVerif、RocksDB。任何文档冲突以本表为准。
@@ -65,8 +66,7 @@ ProVerif、RocksDB。任何文档冲突以本表为准。
 ### P0 —— 补短：会咬人的坑与刚留的尾巴
 
 1. ~~**会话状态持久化**（ratchet 落盘）~~ ✅ M11 完成
-2. **密钥静态加密**：身份私钥明文 JSON 躺盘；范围小（core crypto 一处，
-   AES-GCM + 口令派生，协议层仍是 libsignal，不违背禁自研约定）
+2. ~~**密钥静态加密**~~ ✅ M15 完成
 3. **服务端 message code**：notice/error payload 出稳定码，客户端本地化
    （M10 尾巴，趁热打铁）
 

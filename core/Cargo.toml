@@ -15,6 +15,9 @@ serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"
 rand = "0.9"
+# 静态加密（P0-2）：RustCrypto 标准原语，KEK = Argon2id(登录密码)，AEAD = AES-256-GCM
+argon2 = "0.5"
+aes-gcm = "0.10"
 # 认证平面（/v1/login|register）的 HTTP 客户端。
 # 不启用 TLS：v0 端点都是本机 http://，省掉整棵 TLS 依赖树
 reqwest = { version = "0.12", default-features = false, features = ["json"] }

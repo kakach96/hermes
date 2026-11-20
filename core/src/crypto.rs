@@ -36,6 +36,8 @@ use rand::{Rng as _, SeedableRng as _};
 
 use std::collections::HashSet;
 
+use crate::vault::{self, Vault};
+
 /// 内部错误：统一把 libsignal 的错误族转成字符串。
 /// （InvalidDeviceId 是 libsignal_core 私有模块的类型，只能闭包处理）
 #[derive(Debug)]
@@ -92,10 +94,16 @@ struct Crypto {
     peers: HashSet<String>,
     /// 身份/会话落盘目录（同名 = 同身份，见 KeyMaterial 持久化）
     keys_dir: String,
+    /// 静态加密（P0-2）：KEK 从登录密码派生（Argon2id），AEAD = AES-256-GCM；
+    /// salt 存信封里，落盘文件永远只有密文
+    vault: Vault,
+    salt: Vec<u8>,
 }
 
 /// 起 crypto 线程。channel 两端都是线程安全的。
-pub fn spawn(keys_dir: String) -> (CryptoCmdTx, CryptoEventRx) {
+/// password：登录密码——只用于派生静态加密 KEK（Argon2id），
+/// 不落盘、不出线程；Init 时派生一次常驻内存。
+pub fn spawn(keys_dir: String, password: String) -> (CryptoCmdTx, CryptoEventRx) {
     let (cmd_tx, cmd_rx) = std_mpsc::channel::<CryptoCmd>();
     let (ev_tx, ev_rx) = tokio::sync::mpsc::unbounded_channel::<CryptoEvent>();
     std::thread::Builder::new()
@@ -105,7 +113,7 @@ pub fn spawn(keys_dir: String) -> (CryptoCmdTx, CryptoEventRx) {
             while let Ok(cmd) = cmd_rx.recv() {
                 // Init 必须在 state 守卫之前处理：它就是用来创建 state 的
                 if let CryptoCmd::Init { name } = cmd {
-                    state = init(name, &keys_dir, &ev_tx);
+                    state = init(name, &keys_dir, &password, &ev_tx);
                     continue;
                 }
                 let Some(crypto) = state.as_mut() else {
@@ -197,23 +205,49 @@ fn device_id() -> Result<DeviceId, CryptoError> {
 // Same name = same identity: load persisted key material when present,
 // otherwise generate and persist. Signal's real semantics: identity is
 // stable across restarts, so old sessions keep working after rejoin.
-// v0 stores keys as plain JSON (toy-grade); at-rest encryption is round 2.
+// At rest the files are AES-256-GCM envelopes; the KEK is derived from
+// the login password (Argon2id) - see crate::vault.
 fn init(
     name: String,
     keys_dir: &str,
+    password: &str,
     ev: &tokio::sync::mpsc::UnboundedSender<CryptoEvent>,
 ) -> Option<Crypto> {
-    let result: Option<Result<(InMemSignalProtocolStore, ProtocolAddress, HashSet<String>, String), CryptoError>> =
-        (|| async {
+    let result: Option<
+        Result<
+            (
+                InMemSignalProtocolStore,
+                ProtocolAddress,
+                HashSet<String>,
+                Vault,
+                Vec<u8>,
+                String,
+            ),
+            CryptoError,
+        >,
+    > = (|| async {
             let device = device_id()?;
-            let material = match load_key_material(&name, keys_dir) {
-                Some(m) => m,
+            // KEK 派生：salt 优先沿用既有信封里的（同账号同 KEK），
+            // 没有任何信封（全新账号 / P0-2 前的明文文件）才生成新的
+            let salt = match existing_salt(&name, keys_dir) {
+                Some(s) => s,
+                None => vault::gen_salt().to_vec(),
+            };
+            let vault = Vault::derive(&password, &salt)?;
+            // 载入身份材料：信封（解密）/ 明文（迁移）/ 无文件（新建）
+            let (material, keys_were_legacy) = match load_key_material(&name, keys_dir, &vault)? {
+                Some(pair) => pair,
                 None => {
                     let m = generate_material()?;
-                    save_key_material(&name, keys_dir, &m)?;
-                    m
+                    save_key_material(&name, keys_dir, &vault, &salt, &m)?;
+                    (m, false)
                 }
             };
+            // 明文迁移（P0-2）：老文件在首次带密码登录时加密重写。
+            // 必须在 bundle 构造之前——那会 move 掉 material 的字段
+            if keys_were_legacy {
+                save_key_material(&name, keys_dir, &vault, &salt, &material)?;
+            }
 
             let identity_pair = IdentityKeyPair::from(material.identity.clone());
             let identity_key = *identity_pair.identity_key();
@@ -258,20 +292,26 @@ fn init(
             let local = ProtocolAddress::new(name.clone(), device);
             // 恢复会话状态（ratchet record + 对端身份键）：重启后重放窗口内
             // 的旧密文依然可解——P0-1 修复的正是这个已知边界
-            let peers = load_sessions(&mut store, &name, keys_dir, device)?;
+            let (peers, sessions_were_legacy) =
+                load_sessions(&mut store, &name, keys_dir, device, &vault)?;
+            if sessions_were_legacy {
+                migrate_sessions_file(&name, keys_dir, &vault, &salt)?;
+            }
             let bundle_json = bundle_json_of(&bundle)?;
-            Ok((store, local, peers, bundle_json))
+            Ok((store, local, peers, vault, salt, bundle_json))
         })()
         .now_or_never();
 
     match result {
-        Some(Ok((store, local, peers, bundle_json))) => {
+        Some(Ok((store, local, peers, vault, salt, bundle_json))) => {
             let _ = ev.send(CryptoEvent::Registered { bundle_json: bundle_json.clone() });
             Some(Crypto {
                 local,
                 store,
                 peers,
                 keys_dir: keys_dir.to_string(),
+                vault,
+                salt,
             })
         }
         Some(Err(e)) => {
@@ -333,7 +373,13 @@ fn keys_file(keys_dir: &str, name: &str) -> std::path::PathBuf {
     std::path::Path::new(keys_dir).join(format!("keys_{}.json", name))
 }
 
-fn save_key_material(name: &str, keys_dir: &str, m: &KeyMaterial) -> Result<(), CryptoError> {
+fn save_key_material(
+    name: &str,
+    keys_dir: &str,
+    vault: &Vault,
+    salt: &[u8],
+    m: &KeyMaterial,
+) -> Result<(), CryptoError> {
     std::fs::create_dir_all(keys_dir).map_err(|e| CryptoError(e.to_string()))?;
     let json = serde_json::json!({
         "registration_id": m.registration_id,
@@ -351,13 +397,34 @@ fn save_key_material(name: &str, keys_dir: &str, m: &KeyMaterial) -> Result<(), 
             "signature": b64e(&m.kyber_sig),
         },
     });
-    std::fs::write(keys_file(keys_dir, name), json.to_string())
+    // P0-2：明文 JSON 先过 AEAD 信封再落盘
+    let envelope = vault.seal_json(salt, &json.to_string())?;
+    std::fs::write(keys_file(keys_dir, name), envelope)
         .map_err(|e| CryptoError(e.to_string()))
 }
 
-fn load_key_material(name: &str, keys_dir: &str) -> Option<KeyMaterial> {
-    let text = std::fs::read_to_string(keys_file(keys_dir, name)).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+/// 读身份材料。信封（解密）/ 明文（返回 legacy=true 供迁移）/ 无文件（None）。
+/// 信封解不开（密码不对/损坏）= Err——登录无法继续。
+fn load_key_material(
+    name: &str,
+    keys_dir: &str,
+    vault: &Vault,
+) -> Result<Option<(KeyMaterial, bool)>, CryptoError> {
+    let text = match std::fs::read_to_string(keys_file(keys_dir, name)) {
+        Ok(t) => t,
+        Err(_) => return Ok(None),
+    };
+    // 信封：解密后再按明文解析
+    let (plain, legacy) = match vault.open_json_string(&text)? {
+        Some(p) => (p, false),
+        // 老明文文件：直接按明文解析，标记待迁移
+        None => (text, true),
+    };
+    Ok(parse_key_material(&plain).map(|m| (m, legacy)))
+}
+
+fn parse_key_material(plain: &str) -> Option<KeyMaterial> {
+    let v: serde_json::Value = serde_json::from_str(plain).ok()?;
     let pair = |x: &serde_json::Value| -> Option<KeyPair> {
         Some(
             KeyPair::from_public_and_private(
@@ -381,6 +448,19 @@ fn load_key_material(name: &str, keys_dir: &str) -> Option<KeyMaterial> {
         .ok()?,
         kyber_sig: b64d(v["kyber_pre_key"]["signature"].as_str()?),
     })
+}
+
+/// 既有信封里的 salt（keys 文件优先，sessions 兜底）。
+/// None = 没有任何信封（全新账号或全是 P0-2 前的明文）。
+fn existing_salt(name: &str, keys_dir: &str) -> Option<Vec<u8>> {
+    for f in [keys_file(keys_dir, name), sessions_file(keys_dir, name)] {
+        if let Ok(text) = std::fs::read_to_string(&f) {
+            if let Some(s) = vault::salt_of(&text) {
+                return Some(s);
+            }
+        }
+    }
+    None
 }
 
 fn establish(crypto: &mut Crypto, peer: &str, bundle_json: &str) -> Result<(), CryptoError> {
@@ -489,11 +569,17 @@ fn load_sessions(
     name: &str,
     keys_dir: &str,
     device: DeviceId,
-) -> Result<HashSet<String>, CryptoError> {
-    let text = match std::fs::read_to_string(sessions_file(keys_dir, name)) {
+    vault: &Vault,
+) -> Result<(HashSet<String>, bool), CryptoError> {
+    let raw = match std::fs::read_to_string(sessions_file(keys_dir, name)) {
         Ok(t) => t,
         // 没有历史会话文件 = 全新身份，正常
-        Err(_) => return Ok(HashSet::new()),
+        Err(_) => return Ok((HashSet::new(), false)),
+    };
+    // 信封 → 解密；明文 → legacy 标记（init 里统一加密重写）
+    let (text, legacy) = match vault.open_json_string(&raw)? {
+        Some(p) => (p, false),
+        None => (raw, true),
     };
     let v: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| CryptoError(e.to_string()))?;
@@ -521,7 +607,21 @@ fn load_sessions(
             .unwrap_or_else(|| Err(CryptoError("load session 意外挂起".into())))?;
         peers.insert(peer.clone());
     }
-    Ok(peers)
+    Ok((peers, legacy))
+}
+
+/// 明文 sessions 文件 → 信封（P0-2 迁移，init 里调用）
+fn migrate_sessions_file(
+    name: &str,
+    keys_dir: &str,
+    vault: &Vault,
+    salt: &[u8],
+) -> Result<(), CryptoError> {
+    let text = std::fs::read_to_string(sessions_file(keys_dir, name))
+        .map_err(|e| CryptoError(e.to_string()))?;
+    let envelope = vault.seal_json(salt, &text)?;
+    std::fs::write(sessions_file(keys_dir, name), envelope)
+        .map_err(|e| CryptoError(e.to_string()))
 }
 
 fn save_sessions(crypto: &Crypto) -> Result<(), CryptoError> {
@@ -544,10 +644,12 @@ fn save_sessions(crypto: &Crypto) -> Result<(), CryptoError> {
                 }),
             );
         }
+        // P0-2：整表快照先过 AEAD 信封再落盘
         let text = serde_json::Value::Object(obj).to_string();
+        let envelope = crypto.vault.seal_json(&crypto.salt, &text)?;
         std::fs::write(
             sessions_file(&crypto.keys_dir, crypto.local.name()),
-            text,
+            envelope,
         )
         .map_err(|e| CryptoError(e.to_string()))?;
         Ok::<(), CryptoError>(())
@@ -848,8 +950,8 @@ mod tests {
     #[test]
     fn crypto_thread_lifecycle() {
         let keys_dir = std::env::temp_dir().join("hermes-test-keys").to_string_lossy().into_owned();
-        let (alice_tx, mut alice_ev) = spawn(keys_dir.clone());
-        let (bob_tx, mut bob_ev) = spawn(keys_dir.clone());
+        let (alice_tx, mut alice_ev) = spawn(keys_dir.clone(), "test-passphrase".into());
+        let (bob_tx, mut bob_ev) = spawn(keys_dir.clone(), "test-passphrase".into());
 
         alice_tx.send(CryptoCmd::Init { name: "Alice".into() }).unwrap();
         let registered = alice_ev.blocking_recv().expect("registered event");
@@ -911,8 +1013,8 @@ mod tests {
             .to_string_lossy()
             .into_owned();
 
-        let (alice_tx, mut alice_ev) = spawn(dir.clone());
-        let (bob_tx, mut bob_ev) = spawn(dir.clone());
+        let (alice_tx, mut alice_ev) = spawn(dir.clone(), "test-passphrase".into());
+        let (bob_tx, mut bob_ev) = spawn(dir.clone(), "test-passphrase".into());
 
         alice_tx.send(CryptoCmd::Init { name: "Alice".into() }).unwrap();
         let CryptoEvent::Registered { .. } = alice_ev.blocking_recv().unwrap() else {
@@ -964,7 +1066,7 @@ mod tests {
         drop(bob_ev);
 
         // 同名重建：身份与**会话状态**都从盘上恢复
-        let (bob2_tx, mut bob2_ev) = spawn(dir.clone());
+        let (bob2_tx, mut bob2_ev) = spawn(dir.clone(), "test-passphrase".into());
         bob2_tx.send(CryptoCmd::Init { name: "Bob".into() }).unwrap();
         let CryptoEvent::Registered { .. } = bob2_ev.blocking_recv().unwrap() else {
             panic!("bob2 registered")
@@ -1000,8 +1102,8 @@ mod tests {
             .to_string_lossy()
             .into_owned();
 
-        let (alice_tx, mut alice_ev) = spawn(dir.clone());
-        let (bob_tx, mut bob_ev) = spawn(dir.clone());
+        let (alice_tx, mut alice_ev) = spawn(dir.clone(), "test-passphrase".into());
+        let (bob_tx, mut bob_ev) = spawn(dir.clone(), "test-passphrase".into());
 
         alice_tx.send(CryptoCmd::Init { name: "Alice".into() }).unwrap();
         let CryptoEvent::Registered { .. } = alice_ev.blocking_recv().unwrap() else {
@@ -1057,5 +1159,45 @@ mod tests {
             panic!("bob decrypt 2, got {ev:?}")
         };
         assert_eq!(text, "second");
+    }
+
+    /// P0-2 回归：新登录即写信封；同密码重启身份照常恢复；错密码必须失败。
+    #[test]
+    fn vault_migration_and_wrong_password() {
+        let dir = std::env::temp_dir()
+            .join(format!("hermes-vault-{}", uuid::Uuid::new_v4()))
+            .to_string_lossy()
+            .into_owned();
+        let name = "Migrator";
+        let keys_path = std::path::Path::new(&dir).join("keys_Migrator.json");
+
+        // ① 首次登录：落盘必须是 AEAD 信封（不是明文）
+        std::fs::create_dir_all(&dir).unwrap();
+        let (setup_tx, mut setup_ev) = spawn(dir.clone(), "first-pass".into());
+        setup_tx.send(CryptoCmd::Init { name: name.into() }).unwrap();
+        let CryptoEvent::Registered { .. } = setup_ev.blocking_recv().unwrap() else {
+            panic!("setup init")
+        };
+        drop(setup_tx);
+        let text = std::fs::read_to_string(&keys_path).unwrap();
+        assert!(text.contains("\"kdf\":\"argon2id\""), "新登录应写信封: {text}");
+        assert!(!text.contains("kyber_pre_key"), "信封内不应有明文字段名: {text}");
+
+        // ② 同密码重启：信封解得开，身份恢复
+        let (again_tx, mut again_ev) = spawn(dir.clone(), "first-pass".into());
+        again_tx.send(CryptoCmd::Init { name: name.into() }).unwrap();
+        let CryptoEvent::Registered { .. } = again_ev.blocking_recv().unwrap() else {
+            panic!("same-password restart should register")
+        };
+        drop(again_tx);
+
+        // ③ 错密码：信封解不开，Init 必须 Failed
+        let (wrong_tx, mut wrong_ev) = spawn(dir.clone(), "wrong-pass".into());
+        wrong_tx.send(CryptoCmd::Init { name: name.into() }).unwrap();
+        let ev = wrong_ev.blocking_recv().unwrap();
+        assert!(
+            matches!(ev, CryptoEvent::Failed { .. }),
+            "wrong password must fail init, got {ev:?}"
+        );
     }
 }

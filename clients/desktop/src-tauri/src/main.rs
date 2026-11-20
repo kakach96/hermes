@@ -18,14 +18,16 @@ struct Session {
 
 struct AppState(Mutex<Option<Session>>);
 
-/// 建立 WS 连接（身份已在 URL ?name= 里，由 http::auth 认证后生成）。
+/// 建立 WS 连接（身份已在 URL ?token= 里，由 http::auth 认证后生成）。
 /// 之后所有服务端事件经 "hermes" 事件推给窗口。
+/// password 只进 crypto 线程派生静态加密 KEK，不落盘、不存 Session。
 #[tauri::command]
 async fn connect(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     url: String,
     name: String,
+    password: String,
 ) -> Result<(), String> {
     // 先断旧的（重复连接时）
     if let Some(old) = state.0.lock().unwrap().take() {
@@ -40,7 +42,7 @@ async fn connect(
         .unwrap_or_else(|_| ".".into());
     std::fs::create_dir_all(&keys_dir).ok();
 
-    let (handle, mut events) = hermes_core::connect(&url, &keys_dir, &name).await?;
+    let (handle, mut events) = hermes_core::connect(&url, &keys_dir, &name, &password).await?;
     *state.0.lock().unwrap() = Some(Session { handle, name });
 
     let emitter = app.clone();
