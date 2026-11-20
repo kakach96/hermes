@@ -52,11 +52,16 @@ async fn connect(
     Ok(())
 }
 
-/// HTTP 平面认证：登录（register=false）/ 注册（register=true）。
-/// 成功返回带 ?name= 的 WS 地址，交给 connect。
+/// HTTP 平面认证：登录（register=false）/ 注册（register=true），带密码。
+/// 成功返回带 ?token= 的一次性 WS 地址，交给 connect。
 #[tauri::command]
-async fn auth(base: String, name: String, register: bool) -> Result<String, String> {
-    let a = hermes_core::auth(&base, &name, register).await?;
+async fn auth(
+    base: String,
+    name: String,
+    password: String,
+    register: bool,
+) -> Result<String, String> {
+    let a = hermes_core::auth(&base, &name, &password, register).await?;
     Ok(a.ws_url)
 }
 

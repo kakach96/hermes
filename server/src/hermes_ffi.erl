@@ -9,7 +9,8 @@
 -module(hermes_ffi).
 
 -export([connect/3, close/1, conn_pid/1, subscribe/2, unsubscribe/2,
-         publish/3, request/4, unique_inbox/1, getenv/1]).
+         publish/3, request/4, unique_inbox/1, getenv/1,
+         pbkdf2_sha256/4, strong_rand_bytes/1, rand_hex/1, const_eq/2]).
 
 %% --- 连接管理 ---------------------------------------------------------------
 
@@ -236,3 +237,28 @@ getenv(Name) ->
         false -> {error, nil};
         Value -> {ok, unicode:characters_to_binary(Value)}
     end.
+
+%% ---- password primitives (OTP crypto BIFs, NOT a home-rolled scheme) ----
+
+%% PBKDF2-HMAC-SHA256. OWASP-recommended KDF; the BIF is NIF-accelerated.
+pbkdf2_sha256(Password, Salt, Iterations, OutLen) ->
+    crypto:pbkdf2_hmac(sha256, Password, Salt, Iterations, OutLen).
+
+strong_rand_bytes(N) ->
+    crypto:strong_rand_bytes(N).
+
+%% hex(CSPRNG(N)) as an ascii string (tokens; gleam String = utf8 binary)
+rand_hex(N) ->
+    binary:encode_hex(crypto:strong_rand_bytes(N)).
+
+%% Constant-time equality (XOR-fold; short-circuits only on length mismatch,
+%% which leaks nothing of the digest).
+const_eq(A, B) when byte_size(A) =:= byte_size(B) ->
+    const_eq(A, B, 0);
+const_eq(_, _) ->
+    false.
+
+const_eq(<<X, RestA/binary>>, <<Y, RestB/binary>>, Acc) ->
+    const_eq(RestA, RestB, Acc bor (X bxor Y));
+const_eq(<<>>, <<>>, Acc) ->
+    Acc =:= 0.

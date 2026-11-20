@@ -15,14 +15,16 @@
 ////   subject token 边界，放任用户输入等于放任路由注入。
 
 import gleam/erlang/atom.{type Atom}
+import gleam/bit_array
+import gleam/dynamic/decode
+import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option}
 import gleam/result
 import gleam/string
 
-import gleam/dynamic/decode
-
+import hermes/ffi
 import hermes/store.{type Store}
 
 /// NATS subject 里房间的默认落点（wire 缺省值）
@@ -111,14 +113,6 @@ pub fn user_exists(store: Store, name: String) -> Result(Bool, String) {
   case store.ks_get(store, "users", user_key(name)) {
     Ok(option.Some(_)) -> Ok(True)
     Ok(option.None) -> Ok(False)
-    Error(reason) -> Error(reason)
-  }
-}
-
-pub fn user_register(store: Store, name: String) -> Result(Nil, String) {
-  case user_exists(store, name) {
-    Ok(True) -> Error("用户已存在: " <> name)
-    Ok(False) -> user_touch(store, name)
     Error(reason) -> Error(reason)
   }
 }
@@ -320,6 +314,172 @@ pub fn can_create_channel(
   }
 }
 
+/// 注册（带密码）。老的无密码账号：注册 = 首次设密码（认领），
+/// 已设密码的账号再注册 → 拒绝。
+pub fn user_register(
+  store: Store,
+  name: String,
+  password: String,
+) -> Result(Nil, String) {
+  use _ <- result.try(check_user(name))
+  case password_policy(password) {
+    Error(reason) -> Error(reason)
+    Ok(Nil) ->
+      case user_exists(store, name) {
+        Ok(False) ->
+          case user_touch(store, name) {
+            Ok(Nil) -> user_set_password(store, name, password)
+            Error(reason) -> Error(reason)
+          }
+        Ok(True) ->
+          // 无密码老账号：认领；有密码：拒绝
+          case user_password_hash(store, name) {
+            Ok(option.None) -> user_set_password(store, name, password)
+            Ok(option.Some(_)) -> Error("用户已存在: " <> name)
+            Error(reason) -> Error(reason)
+          }
+        Error(reason) -> Error(reason)
+      }
+  }
+}
+
+/// 密码策略：8..=128 位（产品级下限；上界防 DoS 巨型输入）
+pub fn password_policy(password: String) -> Result(Nil, String) {
+  let n = string.length(password)
+  case n >= 8 && n <= 128 {
+    True -> Ok(Nil)
+    False -> Error("密码长度需在 8~128 位之间")
+  }
+}
+
+/// 校验密码。错误分三种（UI 有各自的引导文案）：
+/// 用户不存在 / 未设密码（老账号）/ 密码错误。
+pub fn user_check_password(
+  store: Store,
+  name: String,
+  password: String,
+) -> Result(Nil, String) {
+  // 先区分"不存在"与"未设密码"——两者落盘形态相同（无 pw 字段）
+  case user_exists(store, name) {
+    Ok(False) -> Error("用户不存在: " <> name)
+    Ok(True) ->
+      case user_password_hash(store, name) {
+        Error(reason) -> Error(reason)
+        Ok(option.None) -> Error("NO_PASSWORD")
+        Ok(option.Some(encoded)) ->
+          case split_pw_hash(encoded) {
+            Error(Nil) -> Error("密码记录损坏: " <> name)
+            Ok(#(salt, expected)) -> {
+              // PBKDF2 计算放恒时比较之前；轮数固定所以耗时与内容无关
+              let derived = ffi.pbkdf2_sha256(
+                bit_array.from_string(password),
+                salt,
+                pw_iterations,
+                32,
+              )
+              case ffi.const_eq(derived, expected) {
+                True -> Ok(Nil)
+                False -> Error("BAD_PASSWORD")
+              }
+            }
+          }
+      }
+    Error(reason) -> Error(reason)
+  }
+}
+
+/// 落盘格式：pbkdf2$sha256$<iters>$<salt_b64>$<hash_b64>
+pub const pw_iterations = 600_000
+
+fn split_pw_hash(encoded: String) -> Result(#(BitArray, BitArray), Nil) {
+  case string.split(encoded, "$") {
+    ["pbkdf2", "sha256", _, salt_b64, hash_b64] -> {
+      case bit_array.base64_decode(salt_b64), bit_array.base64_decode(hash_b64) {
+        Ok(salt), Ok(hash) -> Ok(#(salt, hash))
+        _, _ -> Error(Nil)
+      }
+    }
+    _ -> Error(Nil)
+  }
+}
+
+pub fn user_set_password(
+  store: Store,
+  name: String,
+  password: String,
+) -> Result(Nil, String) {
+  use _ <- result.try(password_policy(password))
+  let salt = ffi.strong_rand_bytes(16)
+  let hash = ffi.pbkdf2_sha256(
+    bit_array.from_string(password),
+    salt,
+    pw_iterations,
+    32,
+  )
+  let encoded =
+    "pbkdf2$sha256$"
+    <> int.to_string(pw_iterations)
+    <> "$"
+    <> bit_array.base64_encode(salt, True)
+    <> "$"
+    <> bit_array.base64_encode(hash, True)
+  // users 记录是读-改-写（保留 created_ms；无记录时补建）
+  case store.ks_get(store, "users", user_key(name)) {
+    Ok(option.Some(existing)) -> {
+      let updated = json_set_pw(existing, encoded)
+      store.ks_put(store, "users", user_key(name), updated)
+    }
+    Ok(option.None) ->
+      store.ks_put(
+        store,
+        "users",
+        user_key(name),
+        json_object_with_pw(now_ms(), encoded),
+      )
+    Error(reason) -> Error(reason)
+  }
+}
+
+/// 读用户记录里的密码哈希（None = 老账号未设密码）
+pub fn user_password_hash(
+  store: Store,
+  name: String,
+) -> Result(Option(String), String) {
+  case store.ks_get(store, "users", user_key(name)) {
+    Ok(option.Some(value)) -> Ok(json_get_string(value, "pw"))
+    Ok(option.None) -> Ok(option.None)
+    Error(reason) -> Error(reason)
+  }
+}
+
+// ---------- 认证令牌（HTTP 签发 → WS 一次性消费） ----------
+
+/// 签发一次性令牌：256-bit CSPRNG hex，存 kv partition，WS 消费即删。
+/// 它是"HTTP 平面完成密码验证"与"WS 会话身份"之间的桥，
+/// 堵上 ?name= 直连可冒充的洞。
+pub fn issue_token(store: Store, name: String) -> Result(String, String) {
+  let token = ffi.rand_hex(32)
+  case store.ks_put(store, "kv", "authtok:" <> token, name) {
+    Ok(Nil) -> Ok(token)
+    Error(reason) -> Error(reason)
+  }
+}
+
+/// 消费令牌（一次性）：命中即删，返回绑定身份；未命中 = 已用/伪造。
+pub fn consume_token(store: Store, token: String) -> Result(String, Nil) {
+  let key = "authtok:" <> token
+  case store.ks_get(store, "kv", key) {
+    Ok(option.Some(name)) -> {
+      let _ = store.ks_delete(store, "kv", key)
+      case check_user(name) {
+        Ok(_) -> Ok(name)
+        Error(_) -> Error(Nil)
+      }
+    }
+    _ -> Error(Nil)
+  }
+}
+
 // ---------- 内部 ----------
 
 fn json_to_string_field(value: String, field: String) -> String {
@@ -327,6 +487,34 @@ fn json_to_string_field(value: String, field: String) -> String {
     Ok(s) -> s
     Error(_) -> ""
   }
+}
+
+fn json_get_string(value: String, field: String) -> Option(String) {
+  case json.parse(from: value, using: decode_string_field(field)) {
+    Ok(s) -> option.Some(s)
+    Error(_) -> option.None
+  }
+}
+
+/// users 记录读-改-写：解析 {created_ms} → 重建（加/换 pw）
+fn json_set_pw(existing: String, pw: String) -> String {
+  let decoder = {
+    use created_ms <- decode.field("created_ms", decode.int)
+    decode.success(created_ms)
+  }
+  let created_ms = case json.parse(from: existing, using: decoder) {
+    Ok(n) -> n
+    Error(_) -> now_ms()
+  }
+  json_object_with_pw(created_ms, pw)
+}
+
+fn json_object_with_pw(created_ms: Int, pw: String) -> String {
+  json.object([
+    #("created_ms", json.int(created_ms)),
+    #("pw", json.string(pw)),
+  ])
+  |> json.to_string
 }
 
 fn decode_string_field(field: String) -> decode.Decoder(String) {

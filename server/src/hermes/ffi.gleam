@@ -56,3 +56,23 @@ pub fn unique_inbox(prefix: String) -> String
 /// 未设置 = Error(Nil)，调用方回落编译期默认。
 @external(erlang, "hermes_ffi", "getenv")
 pub fn getenv(name: String) -> Result(String, Nil)
+
+/// PBKDF2-HMAC-SHA256（OTP crypto BIF；密码哈希的唯一原语，不自研）
+@external(erlang, "hermes_ffi", "pbkdf2_sha256")
+pub fn pbkdf2_sha256(
+  password: BitArray,
+  salt: BitArray,
+  iterations: Int,
+  out_len: Int,
+) -> BitArray
+
+@external(erlang, "hermes_ffi", "strong_rand_bytes")
+pub fn strong_rand_bytes(n: Int) -> BitArray
+
+/// hex(CSPRNG(n)) —— 认证令牌用
+@external(erlang, "hermes_ffi", "rand_hex")
+pub fn rand_hex(n: Int) -> String
+
+/// 恒时比较（防时序侧信道读哈希）
+@external(erlang, "hermes_ffi", "const_eq")
+pub fn const_eq(a: BitArray, b: BitArray) -> Bool

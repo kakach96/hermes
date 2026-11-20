@@ -14,11 +14,16 @@
   const HERMES_I18N = {
     zh: {
       "auth.namePh": "你的名字（新名字 = 注册）",
+      "auth.passwordPh": "密码（至少 8 位）",
       "auth.signIn": "登录",
       "auth.signUp": "注册",
       "auth.needBoth": "地址和名字都要填",
+      "auth.needPassword": "密码也要填",
       "auth.exists": "用户已存在，请改用「登录」",
       "auth.notFound": "用户不存在，请先「注册」",
+      "auth.badPassword": "密码错误",
+      "auth.noPassword": "该账号未设密码，用「注册」按钮首次设置",
+      "auth.weakPassword": "密码至少 8 位",
       "auth.netFail": "连不上服务器 —— 检查地址与服务是否在跑",
       "auth.serverErr": "服务器错误：{code}",
       "auth.connLost": "连接断开 —— 消息与游标都记着，重新登录即可",
@@ -57,11 +62,16 @@
 
     en: {
       "auth.namePh": "Your name (a new name signs you up)",
+      "auth.passwordPh": "Password (min 8 characters)",
       "auth.signIn": "Sign in",
       "auth.signUp": "Sign up",
       "auth.needBoth": "Server address and name are both required",
+      "auth.needPassword": "Password is required",
       "auth.exists": "That name is taken — use Sign in",
       "auth.notFound": "No such user — Sign up first",
+      "auth.badPassword": "Wrong password",
+      "auth.noPassword": "This account has no password yet — use Sign up to set one",
+      "auth.weakPassword": "Password must be at least 8 characters",
       "auth.netFail": "Cannot reach the server — check the address and that it is running",
       "auth.serverErr": "Server error: {code}",
       "auth.connLost": "Connection lost — your cursor is remembered, sign in again to catch up",

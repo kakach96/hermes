@@ -19,13 +19,15 @@
 
 | 方法与路径 | body | 语义 |
 | --- | --- | --- |
-| `POST /v1/register` | `{name}` | 注册：201 `{name}`；已存在 409；非法名 400 |
-| `POST /v1/login` | `{name}` | 登录：200 `{name}`；不存在 401 |
+| `POST /v1/register` | `{name,password}` | 注册：201 `{name,token}`。老的无密码账号：注册=首次设密码（认领）。错误码（body `{code,error}`）：409 `exists` / 400 `weak_password`（8..=128 位）/ 400 `bad_name` |
+| `POST /v1/login` | `{name,password}` | 登录：200 `{name,token}`。错误码：401 `not_found` / 401 `bad_password` / 401 `no_password`（老账号未设密码，用注册补设） |
+| `POST /v1/login` 的密码学 | — | 服务端 PBKDF2-HMAC-SHA256（OTP crypto BIF，60 万轮，16B salt）；恒时比较；**客户端零密码学** |
 | `GET /v1/spaces` | — | 200 `{spaces:[{name,owner}]}` |
 | `GET /v1/spaces/:space/channels` | — | 200 `{space, channels:[]}` |
 
-- v0 无密码：名字即账号（服务端 users 建档 + 客户端本地身份密钥持久化）；
-  密码/令牌留给多端同步阶段
+- WS 身份：认证成功回 **一次性令牌**（256-bit CSPRNG，fjall 代存、消费即删），
+  客户端连 `ws://.../ws?token=<hex>` 换会话身份——密码验证只发生在 HTTP 平面，
+  `?name=` 直连降级为 e2e 裸工具的 dev-only 路径（可冒充，正式客户端不用）
 - `login` WS 帧仍保留（裸工具兼容路径），GUI 走 HTTP 认证后连 WS 不再发它
 
 ## 客户端 → 服务端（WS 文本帧）

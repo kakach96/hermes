@@ -93,7 +93,7 @@ pub fn upgrade(
   storage: store.Store,
   registry: Subject(registry.RegistryMsg),
 ) -> response.Response(mist.ResponseData) {
-  let identity = identity_from_query(req)
+  let identity = identity_from_query(req, storage)
   let initial_name = case identity {
     // 身份合法性已在 identity_from_query 校验过；这里建档（幂等）
     "" -> ""
@@ -142,19 +142,31 @@ pub fn upgrade(
   )
 }
 
-/// 从升级请求的 ?name= 查询参数取会话身份。
-/// 空串/缺参/非法名 = 未登录（裸工具用 join 帧隐式登录兜底）。
-fn identity_from_query(req: request.Request(mist.Connection)) -> String {
+/// 从升级请求的查询参数取会话身份。
+/// token = 一次性令牌（HTTP 认证平面签发，消费即删）——正式路径；
+/// name = 明文直连（e2e 裸工具的 dev-only 路径，正式客户端不用它）。
+fn identity_from_query(
+  req: request.Request(mist.Connection),
+  storage: store.Store,
+) -> String {
   case request.get_query(req) {
     Error(_) -> ""
     Ok(pairs) ->
-      case find_pair(pairs, "name") {
-        Ok(name) ->
-          case meta.check_user(name) {
-            Ok(_) -> name
-            Error(_) -> ""
+      case find_pair(pairs, "token") {
+        Ok(token) ->
+          case meta.consume_token(storage, token) {
+            Ok(name) -> name
+            Error(Nil) -> ""
           }
-        Error(Nil) -> ""
+        Error(Nil) ->
+          case find_pair(pairs, "name") {
+            Ok(name) ->
+              case meta.check_user(name) {
+                Ok(_) -> name
+                Error(_) -> ""
+              }
+            Error(Nil) -> ""
+          }
       }
   }
 }

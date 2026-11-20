@@ -299,23 +299,33 @@ window.addEventListener("error", (e) => {
 async function doAuth(register) {
   const base = $("base").value.trim();
   const name = $("name").value.trim();
+  const password = $("password").value;
   if (!base || !name) {
     $("auth-error").textContent = t("auth.needBoth");
+    return;
+  }
+  if (!password) {
+    $("auth-error").textContent = t("auth.needPassword");
     return;
   }
   $("auth-error").textContent = "";
   $("login-btn").disabled = true;
   $("register-btn").disabled = true;
   try {
-    // ① HTTP 认证（core 内发请求）→ 返回带 ?name= 的 WS 地址
-    const wsUrl = await invoke("auth", { base, name, register });
+    // ① HTTP 认证（core 内发请求）→ 返回带 ?token= 的 WS 地址
+    const wsUrl = await invoke("auth", { base, name, password, register });
     // ② 连 WS（server 升级即登录，回 logged_in 事件切大厅）
     await invoke("connect", { url: wsUrl, name });
+    // 登录成功即清密码框（不留痕）
+    $("password").value = "";
   } catch (e) {
     let msg = String(e).replace(/^"|"$/g, "");
     // core 回吐的是稳定码（http.rs），UI 层负责本地化
     if (msg.startsWith("auth:exists")) msg = t("auth.exists");
     else if (msg.startsWith("auth:not_found")) msg = t("auth.notFound");
+    else if (msg.startsWith("auth:bad_password")) msg = t("auth.badPassword");
+    else if (msg.startsWith("auth:no_password")) msg = t("auth.noPassword");
+    else if (msg.startsWith("auth:weak_password")) msg = t("auth.weakPassword");
     else if (msg.startsWith("auth:net")) msg = t("auth.netFail");
     else if (msg.startsWith("auth:status"))
       msg = t("auth.serverErr", { code: msg.slice("auth:status".length).split(":")[0] });

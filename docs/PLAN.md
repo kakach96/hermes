@@ -52,6 +52,7 @@ core 内置 libsignal 会话（加密里程碑见 M6）。
 | M11 | P0-1 会话状态持久化：ratchet SessionRecord + 对端身份键落盘（sessions_<name>.json），每次会话变化整表快照 | ✅ session_survives_restart 回归：重启解旧密文 + 会话续推 |
 | M12 | P0-1 修复续：Establish 改 ensure-session（存量会话 + 身份键未变则保留，防 X3DH 覆盖）；Logout 补发 Disconnected 事件 | ✅ reestablish_preserves_session 回归 + e2e 离房补投检查 |
 | M13 | 离线消息根修：加密目标从"在线名册"改为"空间持久成员"（joined.targets，fjall members 域），离线成员也有密文落流、重进按游标补投 | ✅ 四套 e2e 全绿 |
+| M14 | 密码认证：PBKDF2-HMAC-SHA256（OTP BIF，60 万轮）+ 恒时比较；一次性令牌桥（HTTP 签发 → WS ?token= 消费即删）；错误机器码（exists/bad_password/no_password/weak_password…）；老账号用注册认领设密 | ✅ e2e_auth 10 项全绿 + 全量回归 |
 
 v0 明确**不做**（留给第二轮）：树状 fanout、QUIC、UniFFI、iOS/Android 视图、
 ProVerif、RocksDB。任何文档冲突以本表为准。
@@ -186,3 +187,6 @@ RocksDB 对比 ADR、e2e 自清理、Docker 构建国内源、Cargo workspace �
 | M12 | 重进房间时 transport 对名单成员逐个 Establish，**盲跑 X3DH 覆盖存量棘轮会话**——对端还在用旧链加密，断线期间的旧密文与后续新消息全部解不开 | Establish 改 ensure-session：`load_session` 有会话且对端身份键与 bundle 一致 → 跳过重建；只有身份变了才走完整 X3DH（Signal 会话归档续用的本义） |
 | M12 | Logout 命令 `break` 掉 WS 循环但**不发 Disconnected**——连接静默死亡，UI 永远停在当前视图（"退出登录没反应"） | break 前必须推 Disconnected；UI 区分主动退出（loggingOut 静音文案）与被动断线 |
 | M13 | **离线消息的架构缺口**：pairwise 加密按"当前在线名册"分发——接收方一离房就从对方的目标集消失，流里根本没有给 TA 的密文，补投自然空手而归。e2e 没抓到是因为测试走 msg 广播路径，与 GUI 的 enc 单播路径不是同一条 | 加密目标 = 空间持久成员（joined.targets），在线名册（members）只管 presence 显示；两者在 wire 上分家 |
+| M14 | **选型**：密码哈希用 OTP 自带 `crypto:pbkdf2_hmac` BIF（OWASP 推荐 PBKDF2-SHA256 60 万轮），不用 argon2——后者要引 NIF 依赖，toy 不值；宪法"禁自研加密"覆盖的是协议层，KDF/恒时比较这类原语选业界标准实现即可 | 记入 ADR 表待补条目 |
+| M14 | 加了密码后 `?name=` 直连就成实打实的冒充洞（之前名字即账号，同等裸奔） | HTTP 认证签发一次性令牌，WS 只认 `?token=`（消费即删）；`?name=` 降级为 dev-only 路径并写入 proto README |
+| M14 | "用户不存在"与"未设密码"落盘形态相同（users 记录都无 pw 字段），check_password 必须先查存在再查哈希，否则 not_found 误报成 no_password | e2e 第 6 项抓的 |

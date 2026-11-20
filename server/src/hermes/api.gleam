@@ -74,43 +74,46 @@ fn auth_endpoint(
   storage: Store,
   register: Bool,
 ) -> Result(Response(mist.ResponseData), Nil) {
-  case read_name(req) {
-    Error(_) -> Ok(bad_request("body 不是合法 {\"name\": ...}"))
-    Ok(name) ->
+  case read_credentials(req) {
+    Error(_) -> Ok(bad_request_code("bad_request", "body 不是合法 {name, password}"))
+    Ok(#(name, password)) ->
       case meta.check_user(name) {
-        Error(reason) -> Ok(bad_request(reason))
+        Error(reason) -> Ok(bad_request_code("bad_name", reason))
         Ok(_) -> {
           let result = case register {
-            True -> meta.user_register(storage, name)
-            False ->
-              case meta.user_exists(storage, name) {
-                Ok(True) -> Ok(Nil)
-                Ok(False) -> Error("用户不存在: " <> name)
-                Error(reason) -> Error(reason)
-              }
+            // 注册：新建账号或认领无密码老账号（首次设密码）
+            True -> meta.user_register(storage, name, password)
+            // 登录：密码校验
+            False -> meta.user_check_password(storage, name, password)
           }
           case result {
-            Ok(Nil) -> {
-              let status = case register {
-                True -> 201
-                False -> 200
+            Ok(Nil) ->
+              // 成功 = 签发一次性 WS 令牌（HTTP 认证平面与 WS 身份的桥）
+              case meta.issue_token(storage, name) {
+                Ok(token) -> {
+                  let status = case register {
+                    True -> 201
+                    False -> 200
+                  }
+                  Ok(
+                    response.new(status)
+                    |> response.set_header("content-type", "application/json")
+                    |> response.set_body(
+                      mist.Bytes(body_tree(
+                        json.object([
+                          #("name", json.string(name)),
+                          #("token", json.string(token)),
+                        ]),
+                      )),
+                    ),
+                  )
+                }
+                Error(reason) -> Ok(json_error(500, reason))
               }
-              Ok(
-                response.new(status)
-                |> response.set_header("content-type", "application/json")
-                |> response.set_body(
-                  mist.Bytes(body_tree(
-                    json.object([#("name", json.string(name))]),
-                  )),
-                ),
-              )
-            }
             Error(reason) -> {
-              let status = case register {
-                True -> 409
-                False -> 401
-              }
-              Ok(json_error(status, reason))
+              // 机器码 → 客户端本地化；人读文本兜底
+              let #(status, code, text) = auth_error_parts(register, reason)
+              Ok(json_code_error(status, code, text))
             }
           }
         }
@@ -118,26 +121,47 @@ fn auth_endpoint(
   }
 }
 
+/// 后端错误 → (HTTP 状态, 机器码, 人读文本)。
+/// 机器码是 wire 契约（UI 按 code 本地化），文本只是调试兜底。
+fn auth_error_parts(register: Bool, reason: String) -> #(Int, String, String) {
+  case register {
+    True ->
+      case reason {
+        "密码长度需在 8~128 位之间" -> #(400, "weak_password", reason)
+        "用户已存在" <> _ -> #(409, "exists", reason)
+        _ -> #(400, "register_failed", reason)
+      }
+    False ->
+      case reason {
+        "用户不存在" <> _ -> #(401, "not_found", reason)
+        "NO_PASSWORD" -> #(401, "no_password", "该账号未设密码")
+        "BAD_PASSWORD" -> #(401, "bad_password", "密码错误")
+        _ -> #(401, "login_failed", reason)
+      }
+  }
+}
+
 // ---------- 内部 ----------
 
-fn read_name(req: Request(mist.Connection)) -> Result(String, Nil) {
+fn read_credentials(req: Request(mist.Connection)) -> Result(#(String, String), Nil) {
   case mist.read_body(req, 64_000) {
     Error(_) -> Error(Nil)
     Ok(req2) ->
       case bit_array.to_string(req2.body) {
         Error(Nil) -> Error(Nil)
         Ok(text) ->
-          case json.parse(from: text, using: name_decoder()) {
-            Ok(name) -> Ok(name)
+          case json.parse(from: text, using: credentials_decoder()) {
+            Ok(pair) -> Ok(pair)
             Error(_) -> Error(Nil)
           }
       }
   }
 }
 
-fn name_decoder() -> decode.Decoder(String) {
+fn credentials_decoder() -> decode.Decoder(#(String, String)) {
   use name <- decode.field("name", decode.string)
-  decode.success(name)
+  use password <- decode.field("password", decode.string)
+  decode.success(#(name, password))
 }
 
 fn body_tree(j: json.Json) -> bytes_tree.BytesTree {
@@ -156,8 +180,20 @@ fn json_error(status: Int, reason: String) -> Response(mist.ResponseData) {
   |> response.set_body(mist.Bytes(body_tree(error_body(reason))))
 }
 
-fn bad_request(reason: String) -> Response(mist.ResponseData) {
-  json_error(400, reason)
+/// auth 契约错误体：{code（机器码，UI 本地化）, error（人读兜底）}
+fn json_code_error(status: Int, code: String, text: String) -> Response(mist.ResponseData) {
+  response.new(status)
+  |> response.set_header("content-type", "application/json")
+  |> response.set_body(
+    mist.Bytes(body_tree(json.object([
+      #("code", json.string(code)),
+      #("error", json.string(text)),
+    ]))),
+  )
+}
+
+fn bad_request_code(code: String, text: String) -> Response(mist.ResponseData) {
+  json_code_error(400, code, text)
 }
 
 fn error_body(reason: String) -> json.Json {
