@@ -83,6 +83,33 @@ send(ws, { type: "join", name: "Mallory", cursor: 0, space: S, channel: "dev" })
 await sleep(300);
 check("冒名 join 被拒", got(ws, "error", (m) => m.reason.includes("已登录为")));
 
+// 7. 离房期间的消息：重进同频道后必须补投（GUI 用户的核心场景）
+send(ws, { type: "join", cursor: 0, space: S, channel: "dev" });
+await sleep(400);
+const bob = await open();
+send(bob, { type: "login", name: "Bob" });
+await sleep(300);
+send(bob, { type: "join", cursor: 0, space: S, channel: "dev" });
+await sleep(400);
+const markLeave = ws.messages.length;
+send(ws, { type: "leave" });
+await sleep(300);
+// Alice 离房期间 Bob 发两条
+send(bob, { type: "msg", text: "你不在-1", dedup_id: "away1" });
+await sleep(250);
+send(bob, { type: "msg", text: "你不在-2", dedup_id: "away2" });
+await sleep(400);
+// 重进：cursor 传 0，server 用它代存的游标补投
+send(ws, { type: "join", cursor: 0, space: S, channel: "dev" });
+await sleep(600);
+const afterRejoin = ws.messages.slice(markLeave);
+check(
+  "重进补投离房期间的两条消息",
+  afterRejoin.some((m) => m.type === "chat" && m.dedup_id === "away1") &&
+    afterRejoin.some((m) => m.type === "chat" && m.dedup_id === "away2"),
+);
+bob.close();
+
 ws.close();
 console.log(failures === 0 ? "== E2E HOME ALL PASS ==" : `== E2E ${failures} FAILURES ==`);
 process.exit(failures === 0 ? 0 : 1);

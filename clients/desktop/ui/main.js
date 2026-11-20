@@ -18,6 +18,7 @@ let currentSpace = "";
 let currentChannel = "";
 let selectedSpace = ""; // 大厅里当前点开的空间
 let lastCount = null; // 最近一次在线人数（语言切换重绘用）
+let loggingOut = false; // 主动退出登录（断线文案静音用）
 
 // ---------- 主题 ----------
 
@@ -258,13 +259,18 @@ function handle(ev) {
 }
 
 function handleDisconnected() {
-  const wasIn = connected;
+  const intentional = loggingOut;
+  loggingOut = false;
+  const wasConnected = connected;
   connected = false;
   inRoom = false;
   $("input").disabled = true;
   $("send").disabled = true;
   showAuth();
-  if (wasIn) $("auth-error").textContent = t("auth.connLost");
+  // 主动退出：安静回登录页；被动断线才提示补投语义
+  if (!intentional && wasConnected) {
+    $("auth-error").textContent = t("auth.connLost");
+  }
 }
 
 function renderRoomTag(count) {
@@ -384,7 +390,10 @@ $("leave-item").onclick = () => {
 };
 $("logout-item").onclick = () => {
   closeUserMenu();
-  invoke("logout").catch(() => {});
+  loggingOut = true;
+  invoke("logout").catch(() => {
+    loggingOut = false;
+  });
   // disconnected 事件负责回登录页
 };
 document.addEventListener("click", (e) => {

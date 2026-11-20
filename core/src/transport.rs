@@ -125,8 +125,13 @@ pub async fn connect(
                 cmd = cmd_rx.recv() => {
                     let Some(frame) = cmd else { break };
                     match frame {
-                        // 真断开：不发帧，直接掉线（server 靠连接关闭清理）
-                        ClientFrame::Logout => break,
+                        // 真断开：不发帧，直接掉线（server 靠连接关闭清理）。
+                        // 必须先推 Disconnected——loop break 是静默的，
+                        // 否则 UI 永远停在当前视图（"退出登录没反应"的根因）
+                        ClientFrame::Logout => {
+                            let _ = ev_tx.send(ClientEvent::Disconnected);
+                            break;
+                        }
                         ClientFrame::Leave => {
                             // 离房不断连：回大厅，加密目标名单清空重建
                             if joined {

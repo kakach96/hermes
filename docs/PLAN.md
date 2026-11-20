@@ -50,6 +50,7 @@ core 内置 libsignal 会话（加密里程碑见 M6）。
 | M9 | Docker 部署：多阶段镜像（sidecar/shipment/erlang:29-slim）、compose + 官方 NATS 镜像（tag 锁 2.15.3）、server 环境变量覆盖（NATS 地址/sidecar 路径/数据目录） | ✅ 容器化栈四套 e2e 全绿 |
 | M10 | 客户端 i18n（zh/en）：i18n.js 字典 + data-i18n 静态刷 + t() 动态插值，菜单切换并记忆；core 认证错误改稳定码（auth:*）由 UI 本地化 | ✅ 浏览器双语全链路验证 |
 | M11 | P0-1 会话状态持久化：ratchet SessionRecord + 对端身份键落盘（sessions_<name>.json），每次会话变化整表快照 | ✅ session_survives_restart 回归：重启解旧密文 + 会话续推 |
+| M12 | P0-1 修复续：Establish 改 ensure-session（存量会话 + 身份键未变则保留，防 X3DH 覆盖）；Logout 补发 Disconnected 事件 | ✅ reestablish_preserves_session 回归 + e2e 离房补投检查 |
 
 v0 明确**不做**（留给第二轮）：树状 fanout、QUIC、UniFFI、iOS/Android 视图、
 ProVerif、RocksDB。任何文档冲突以本表为准。
@@ -179,3 +180,5 @@ RocksDB 对比 ADR、e2e 自清理、Docker 构建国内源、Cargo workspace �
 | M9 | PowerShell 管道 `docker build ... \| Select-Object -Last N` 把全部输出缓冲到结束 | 后台任务要直写日志文件（`cmd /c "... > x.log 2>&1"`），别过 Select-Object |
 | M10 | i18n.js 顶层 `function t` 与 main.js 顶层 `const { t } = ...` 跨脚本撞名 → **SyntaxError 直接杀掉整个 main.js**，且 UI 静态文本照常显示（i18n.js 还活着），极易误判"功能正常" | 库脚本一律包 IIFE 只暴露 window.hermesI18n；浏览器验证必须看 console 而非只看渲染 |
 | M10 | PowerShell 内联 `python -c` 嵌套引号又被吞（后台静默失败） | 同一坑第三次：凡是带引号/中文的 python 一律落 .py 文件执行，别内联 |
+| M12 | 重进房间时 transport 对名单成员逐个 Establish，**盲跑 X3DH 覆盖存量棘轮会话**——对端还在用旧链加密，断线期间的旧密文与后续新消息全部解不开 | Establish 改 ensure-session：`load_session` 有会话且对端身份键与 bundle 一致 → 跳过重建；只有身份变了才走完整 X3DH（Signal 会话归档续用的本义） |
+| M12 | Logout 命令 `break` 掉 WS 循环但**不发 Disconnected**——连接静默死亡，UI 永远停在当前视图（"退出登录没反应"） | break 前必须推 Disconnected；UI 区分主动退出（loggingOut 静音文案）与被动断线 |

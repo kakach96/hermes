@@ -387,17 +387,35 @@ fn establish(crypto: &mut Crypto, peer: &str, bundle_json: &str) -> Result<(), C
     let run = async {
         let bundle = parse_bundle(bundle_json)?;
         let peer_addr = ProtocolAddress::new(peer.to_string(), device_id()?);
-        initiate_session(
-            &peer_addr,
-            &crypto.local,
-            &mut crypto.store.session_store,
-            &mut crypto.store.identity_store,
-            &bundle,
-            SystemTime::now(),
-            &mut fresh_rng(),
-        )
-        .await?;
-        Ok(())
+        // ensure-session 语义（Signal 的会话归档续用）：
+        // 已有会话且对端身份键未变 → 保留现有棘轮，跳过 X3DH。
+        // 盲目重建会覆盖存量会话——对端还在用旧链发消息，覆盖后所有
+        // 旧密文（含断线期间的）与后续新消息都解不开
+        //（"重进房间看不到离线消息"的根因）。
+        let existing = crypto.store.session_store.load_session(&peer_addr).await?;
+        let stored_identity = crypto.store.identity_store.get_identity(&peer_addr).await?;
+        let bundle_identity = bundle.identity_key()?;
+        let identity_unchanged = stored_identity
+            .as_ref()
+            .map(|k| k == bundle_identity)
+            .unwrap_or(false);
+        match (existing.is_some(), identity_unchanged) {
+            (true, true) => Ok(()),
+            // 无会话，或对端换了身份键（重置密钥）→ 走完整 X3DH/PQXDH
+            _ => {
+                initiate_session(
+                    &peer_addr,
+                    &crypto.local,
+                    &mut crypto.store.session_store,
+                    &mut crypto.store.identity_store,
+                    &bundle,
+                    SystemTime::now(),
+                    &mut fresh_rng(),
+                )
+                .await?;
+                Ok(())
+            }
+        }
     };
     run.now_or_never().unwrap_or_else(|| Err(CryptoError("establish 意外挂起".into())))
 }
@@ -970,5 +988,74 @@ mod tests {
             panic!("bob2 decrypted m3")
         };
         assert_eq!(text, "after-restart");
+    }
+
+    /// ensure-session 回归：对同一 bundle 重复 Establish 不得覆盖存量会话。
+    /// 若盲目重跑 X3DH，alice 的新链对 bob 是未知的，后续消息全部解不开
+    ///（重进房间的 transport 会对名单成员逐个 Establish，真实场景高发）。
+    #[test]
+    fn reestablish_preserves_session() {
+        let dir = std::env::temp_dir()
+            .join(format!("hermes-ensure-{}", uuid::Uuid::new_v4()))
+            .to_string_lossy()
+            .into_owned();
+
+        let (alice_tx, mut alice_ev) = spawn(dir.clone());
+        let (bob_tx, mut bob_ev) = spawn(dir.clone());
+
+        alice_tx.send(CryptoCmd::Init { name: "Alice".into() }).unwrap();
+        let CryptoEvent::Registered { .. } = alice_ev.blocking_recv().unwrap() else {
+            panic!("alice registered")
+        };
+        bob_tx.send(CryptoCmd::Init { name: "Bob".into() }).unwrap();
+        let CryptoEvent::Registered { bundle_json: bob_bundle } =
+            bob_ev.blocking_recv().unwrap()
+        else {
+            panic!("bob registered")
+        };
+
+        // 第一次建会话 + 往返
+        alice_tx
+            .send(CryptoCmd::Establish { peer: "Bob".into(), bundle_json: bob_bundle.clone() })
+            .unwrap();
+        let CryptoEvent::Established { .. } = alice_ev.blocking_recv().unwrap() else {
+            panic!("first established")
+        };
+        let send = |ev: &mut tokio::sync::mpsc::UnboundedReceiver<CryptoEvent>, text: &str| {
+            alice_tx
+                .send(CryptoCmd::Encrypt {
+                    peer: "Bob".into(),
+                    dedup_id: text.into(),
+                    plaintext: text.as_bytes().to_vec(),
+                })
+                .unwrap();
+            let CryptoEvent::Encrypted { body_b64, .. } = ev.blocking_recv().unwrap() else {
+                panic!("encrypted")
+            };
+            body_b64
+        };
+        let body1 = send(&mut alice_ev, "first");
+        bob_tx.send(CryptoCmd::Decrypt { peer: "Alice".into(), body_b64: body1 }).unwrap();
+        let CryptoEvent::Decrypted { text, .. } = bob_ev.blocking_recv().unwrap() else {
+            panic!("bob decrypt 1")
+        };
+        assert_eq!(text, "first");
+
+        // 模拟重进房间：transport 再发一次同样的 Establish（名单驱动的懒建）
+        alice_tx
+            .send(CryptoCmd::Establish { peer: "Bob".into(), bundle_json: bob_bundle })
+            .unwrap();
+        let CryptoEvent::Established { .. } = alice_ev.blocking_recv().unwrap() else {
+            panic!("second established")
+        };
+
+        // 会话未被覆盖：后续往返必须继续可用
+        let body2 = send(&mut alice_ev, "second");
+        bob_tx.send(CryptoCmd::Decrypt { peer: "Alice".into(), body_b64: body2 }).unwrap();
+        let ev = bob_ev.blocking_recv().unwrap();
+        let CryptoEvent::Decrypted { text, .. } = ev else {
+            panic!("bob decrypt 2, got {ev:?}")
+        };
+        assert_eq!(text, "second");
     }
 }
