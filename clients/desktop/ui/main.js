@@ -5,6 +5,7 @@
 // 离开房间回大厅不断连；退出登录才真正断开。
 
 const { invoke } = window.__TAURI__.core;
+const { t, setLang, cycleLang } = window.hermesI18n;
 const { listen } = window.__TAURI__.event;
 
 const $ = (id) => document.getElementById(id);
@@ -16,6 +17,7 @@ let myName = "";
 let currentSpace = "";
 let currentChannel = "";
 let selectedSpace = ""; // 大厅里当前点开的空间
+let lastCount = null; // 最近一次在线人数（语言切换重绘用）
 
 // ---------- 主题 ----------
 
@@ -25,7 +27,8 @@ async function applyTheme(theme) {
   localStorage.setItem("hermes-theme", theme);
   const icon = theme === "light" ? "☾" : "☀";
   $("theme").textContent = icon;
-  $("theme-item").textContent = `${icon} 切换主题`;
+  // 图标独立 span；文字部分由 data-i18n 统一管理
+  $("theme-icon").textContent = icon;
   try {
     await window.__TAURI__.window.getCurrentWindow().setTheme(theme);
   } catch {
@@ -60,7 +63,7 @@ function showHome() {
   $("leave-item").classList.add("hidden");
   selectedSpace = "";
   $("channel-list-ui").innerHTML = "";
-  $("ch-title").textContent = "频道 · 选一个空间";
+  $("ch-title").textContent = t("home.channelsPick");
   invoke("list_spaces").catch(showHint);
 }
 
@@ -124,10 +127,10 @@ function renderSpaces(spaces) {
     li.className = "home-item" + (s.name === selectedSpace ? " selected" : "");
     li.innerHTML = `<span class="item-name"></span><span class="item-sub"></span>`;
     li.querySelector(".item-name").textContent = s.name;
-    li.querySelector(".item-sub").textContent = "owner: " + s.owner;
+    li.querySelector(".item-sub").textContent = t("home.ownerIs", { name: s.owner });
     li.onclick = () => {
       selectedSpace = s.name;
-      $("ch-title").textContent = `频道 · ${s.name}`;
+      $("ch-title").textContent = t("home.channelsOf", { name: s.name });
       showHint("");
       // 重渲染以刷新选中态，再拉该空间频道
       renderSpaces(spaces);
@@ -138,7 +141,7 @@ function renderSpaces(spaces) {
   if (!spaces || spaces.length === 0) {
     const li = document.createElement("li");
     li.className = "home-empty";
-    li.textContent = "还没有空间 —— 上面建一个";
+    li.textContent = t("home.noSpaces");
     ul.appendChild(li);
   }
 }
@@ -146,11 +149,12 @@ function renderSpaces(spaces) {
 function renderChannels(space, channels) {
   const ul = $("channel-list-ui");
   ul.innerHTML = "";
-  $("ch-title").textContent = `频道 · ${space}`;
+  $("ch-title").textContent = t("home.channelsOf", { name: space });
   for (const c of channels || []) {
     const li = document.createElement("li");
     li.className = "home-item joinable";
-    li.innerHTML = `<span class="item-name"></span><button class="mini enter">进入</button>`;
+    li.innerHTML = `<span class="item-name"></span><button class="mini enter"></button>`;
+    li.querySelector(".enter").textContent = t("home.enter");
     li.querySelector(".item-name").textContent = "# " + c;
     li.querySelector(".enter").onclick = () => enterChannel(space, c);
     ul.appendChild(li);
@@ -158,7 +162,7 @@ function renderChannels(space, channels) {
   if (!channels || channels.length === 0) {
     const li = document.createElement("li");
     li.className = "home-empty";
-    li.textContent = "这个空间还没有频道";
+    li.textContent = t("home.noChannels");
     ul.appendChild(li);
   }
 }
@@ -180,11 +184,11 @@ async function startListen() {
       try {
         handle(ev);
       } catch (e) {
-        showHint("渲染错误: " + e.message, true);
+        showHint(t("misc.renderErr", { msg: e.message }), true);
       }
     });
   } catch (e) {
-    showFatal("事件桥注册失败: " + (e?.message ?? String(e)));
+    showFatal(t("misc.bridgeFail", { msg: e?.message ?? String(e) }));
   }
 }
 
@@ -205,7 +209,7 @@ function handle(ev) {
       if (ev.space === selectedSpace) renderChannels(ev.space, ev.channels);
       break;
     case "space_created":
-      showHint(`空间已创建：${ev.name}（你是 owner）`);
+      showHint(t("home.spaceCreated", { name: ev.name }));
       selectedSpace = ev.name;
       invoke("list_spaces").catch(() => {});
       invoke("list_channels", { space: ev.name }).catch(() => {});
@@ -216,7 +220,8 @@ function handle(ev) {
       break;
     case "joined":
       showChat();
-      renderRoomTag((ev.members || []).length);
+      lastCount = (ev.members || []).length;
+      renderRoomTag(lastCount);
       inRoom = true;
       connected = true;
       $("input").disabled = false;
@@ -224,7 +229,8 @@ function handle(ev) {
       $("input").focus();
       break;
     case "members_changed":
-      renderRoomTag((ev.members || []).length);
+      lastCount = (ev.members || []).length;
+      renderRoomTag(lastCount);
       break;
     case "chat":
       addRow(ev.from, ev.text, ev.from === myName);
@@ -247,7 +253,7 @@ function handle(ev) {
       handleDisconnected();
       break;
     default:
-      showHint("未知事件: " + JSON.stringify(ev), true);
+      showHint(t("misc.unknownEv", { ev: JSON.stringify(ev) }), true);
   }
 }
 
@@ -258,12 +264,12 @@ function handleDisconnected() {
   $("input").disabled = true;
   $("send").disabled = true;
   showAuth();
-  if (wasIn) $("auth-error").textContent = "连接断开 —— 消息与游标都记着，重新登录即可";
+  if (wasIn) $("auth-error").textContent = t("auth.connLost");
 }
 
 function renderRoomTag(count) {
   const text =
-    `${currentSpace}/${currentChannel}` + (count != null ? ` · ${count}人在` : "");
+    `${currentSpace}/${currentChannel}` + (count != null ? ` · ${t("room.onlineN", { n: count })}` : "");
   const tag = $("room-tag");
   tag.textContent = text;
   tag.title = text; // 截断时悬停看全名
@@ -276,10 +282,10 @@ function showFatal(msg) {
 // JS 侧任何未捕获错误都要可见，不许静默
 window.addEventListener("unhandledrejection", (e) => {
   const r = e.reason;
-  showFatal("错误: " + (r?.message ?? String(r)));
+  showFatal(t("misc.err", { msg: r?.message ?? String(r) }));
 });
 window.addEventListener("error", (e) => {
-  showFatal("错误: " + e.message);
+  showFatal(t("misc.err", { msg: e.message }));
 });
 
 // ---------- 登录 / 注册（HTTP 平面） ----------
@@ -288,7 +294,7 @@ async function doAuth(register) {
   const base = $("base").value.trim();
   const name = $("name").value.trim();
   if (!base || !name) {
-    $("auth-error").textContent = "地址和名字都要填";
+    $("auth-error").textContent = t("auth.needBoth");
     return;
   }
   $("auth-error").textContent = "";
@@ -300,7 +306,11 @@ async function doAuth(register) {
     // ② 连 WS（server 升级即登录，回 logged_in 事件切大厅）
     await invoke("connect", { url: wsUrl, name });
   } catch (e) {
-    $("auth-error").textContent = String(e).replace(/^"|"$/g, "");
+    let msg = String(e).replace(/^"|"$/g, "");
+    // core 回吐的是稳定码（http.rs），UI 层负责本地化
+    if (msg.startsWith("auth:exists")) msg = t("auth.exists");
+    else if (msg.startsWith("auth:not_found")) msg = t("auth.notFound");
+    $("auth-error").textContent = msg;
   } finally {
     $("login-btn").disabled = false;
     $("register-btn").disabled = false;
@@ -324,7 +334,7 @@ $("btn-new-space").onclick = () => {
 };
 $("btn-new-channel").onclick = () => {
   if (!selectedSpace) {
-    showHint("先在左边选一个空间", true);
+    showHint(t("home.pickSpaceFirst"), true);
     return;
   }
   const name = $("new-channel").value.trim();
@@ -356,13 +366,17 @@ $("user-btn").onclick = (e) => {
   e.stopPropagation();
   $("user-menu").classList.toggle("hidden");
 };
+$("lang-item").onclick = () => {
+  // 切语言（不关菜单，让用户当场看到效果）
+  cycleLang();
+};
 $("theme-item").onclick = () => {
   applyTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light");
 };
 $("leave-item").onclick = () => {
   closeUserMenu();
   if (!inRoom) return;
-  invoke("leave_room").catch((e) => addLine("err", "退出失败: " + e));
+  invoke("leave_room").catch((e) => addLine("err", t("chat.leaveFail", { e })));
   // room_left 事件负责回大厅
 };
 $("logout-item").onclick = () => {
@@ -377,5 +391,18 @@ document.addEventListener("click", (e) => {
     if (!inMenu && !onBtn) closeUserMenu();
   }
 });
+
+// 切语言后的动态文案重绘：静态部分（data-i18n）已由 i18n.js 刷过
+window.__hermesOnLang = () => {
+  applyTheme(document.documentElement.dataset.theme);
+  if (inRoom) renderRoomTag(lastCount);
+  if (!$("home").classList.contains("hidden")) {
+    if (selectedSpace) {
+      $("ch-title").textContent = t("home.channelsOf", { name: selectedSpace });
+      invoke("list_channels", { space: selectedSpace }).catch(() => {});
+    }
+    invoke("list_spaces").catch(() => {});
+  }
+};
 
 startListen();

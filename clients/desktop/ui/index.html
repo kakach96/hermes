@@ -14,10 +14,10 @@
       <div class="wordmark">hermes<span class="dot"></span></div>
       <div class="card-sub">beamed messages, no noise</div>
       <input id="base" class="field" spellcheck="false" value="http://127.0.0.1:8080" />
-      <input id="name" class="field" spellcheck="false" placeholder="你的名字（新名字 = 注册）" autofocus />
+      <input id="name" class="field" spellcheck="false" data-i18n-ph="auth.namePh" autofocus />
       <div class="auth-row">
-        <button id="login-btn" class="btn half">登录</button>
-        <button id="register-btn" class="btn half">注册</button>
+        <button id="login-btn" class="btn half" data-i18n="auth.signIn">登录</button>
+        <button id="register-btn" class="btn half" data-i18n="auth.signUp">注册</button>
       </div>
       <div id="auth-error" class="join-error"></div>
     </div>
@@ -32,12 +32,13 @@
         <span id="room-tag" class="tag" title="">lobby/general</span>
       </div>
       <span class="spacer"></span>
-      <button id="user-btn" class="me-btn" title="账号菜单"></button>
-      <!-- 用户名弹窗：主题切换 + 离开房间（聊天页） + 退出登录 -->
+      <button id="user-btn" class="me-btn" data-i18n-title="account.title" title="账号菜单"></button>
+      <!-- 用户名弹窗：语言 / 主题 / 离开房间（聊天页） / 退出登录 -->
       <div id="user-menu" class="user-menu hidden">
-        <button id="theme-item" class="menu-item">☾ 切换主题</button>
-        <button id="leave-item" class="menu-item menu-danger">⏻ 退出房间</button>
-        <button id="logout-item" class="menu-item menu-danger">⏏ 退出登录</button>
+        <button id="lang-item" class="menu-item">🌐 <span data-i18n="menu.lang">语言</span></button>
+        <button id="theme-item" class="menu-item"><span id="theme-icon">☾</span> <span data-i18n="menu.theme">切换主题</span></button>
+        <button id="leave-item" class="menu-item menu-danger">⏻ <span data-i18n="menu.leaveRoom">退出房间</span></button>
+        <button id="logout-item" class="menu-item menu-danger">⏏ <span data-i18n="menu.signOut">退出登录</span></button>
       </div>
     </header>
 
@@ -45,18 +46,18 @@
     <div id="home" class="hidden">
       <div class="home-cols">
         <section class="home-col">
-          <div class="home-head"><h2>空间</h2></div>
+          <div class="home-head"><h2 data-i18n="home.spaces">空间</h2></div>
           <div class="home-new">
-            <input id="new-space" class="home-in" spellcheck="false" placeholder="新空间名" />
-            <button id="btn-new-space" class="mini">建空间</button>
+            <input id="new-space" class="home-in" spellcheck="false" data-i18n-ph="home.newSpacePh" />
+            <button id="btn-new-space" class="mini" data-i18n="home.createSpace">建空间</button>
           </div>
           <ul id="space-list-ui" class="home-list"></ul>
         </section>
         <section class="home-col">
-          <div class="home-head"><h2 id="ch-title">频道 · 选一个空间</h2></div>
+          <div class="home-head"><h2 id="ch-title" data-i18n="home.channelsPick">频道 · 选一个空间</h2></div>
           <div class="home-new">
-            <input id="new-channel" class="home-in" spellcheck="false" placeholder="新频道名" />
-            <button id="btn-new-channel" class="mini">建频道</button>
+            <input id="new-channel" class="home-in" spellcheck="false" data-i18n-ph="home.newChannelPh" />
+            <button id="btn-new-channel" class="mini" data-i18n="home.createChannel">建频道</button>
           </div>
           <ul id="channel-list-ui" class="home-list"></ul>
         </section>
@@ -68,12 +69,13 @@
     <div id="chat" class="hidden">
       <main id="log"></main>
       <footer>
-        <input id="input" spellcheck="false" placeholder="说点什么…" disabled />
+        <input id="input" spellcheck="false" data-i18n-ph="chat.inputPh" disabled />
         <button id="send" class="send" disabled>↩</button>
       </footer>
     </div>
   </div>
 
+  <script src="i18n.js"></script>
   <script src="main.js"></script>
 </body>
 </html>

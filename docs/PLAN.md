@@ -48,6 +48,7 @@ core 内置 libsignal 会话（加密里程碑见 M6）。
 | M7.5 | 登录/大厅三段式：login 帧与会话身份、leave 语义改为离房不断连、GUI 登录页 + 空间/频道大厅 | ✅ e2e_home 10 项全绿 + 全量回归 |
 | M8 | HTTP 认证平面：mist 复用为 REST（/v1/register|login|spaces|channels），WS ?name= 升级即登录，core http.rs + reqwest（无 TLS） | ✅ e2e_auth 12 项全绿 + 全量回归 |
 | M9 | Docker 部署：多阶段镜像（sidecar/shipment/erlang:29-slim）、compose + 官方 NATS 镜像（tag 锁 2.15.3）、server 环境变量覆盖（NATS 地址/sidecar 路径/数据目录） | ✅ 容器化栈四套 e2e 全绿 |
+| M10 | 客户端 i18n（zh/en）：i18n.js 字典 + data-i18n 静态刷 + t() 动态插值，菜单切换并记忆；core 认证错误改稳定码（auth:*）由 UI 本地化 | ✅ 浏览器双语全链路验证 |
 
 v0 明确**不做**（留给第二轮）：树状 fanout、QUIC、UniFFI、iOS/Android 视图、
 ProVerif、RocksDB。任何文档冲突以本表为准。
@@ -145,3 +146,5 @@ ProVerif、RocksDB。任何文档冲突以本表为准。
 | M9 | Docker Hub/ghcr 直拉仅 ~100KB/s，且杀构建不续传已下载的层 | ghcr 走 `ghcr.nju.edu.cn` 代理、docker hub 走 `docker.1ms.run`，拉完 `docker tag` 回官方名（buildkit 见本地同 digest 镜像即跳过拉取）；daocloud 对 ghcr 有白名单、南大不放行 docker hub，通道要备多个 |
 | M9 | `docker compose down` 后立刻重启本机 server 报 Eaddrinuse | 端口映射释放有延迟，等几秒重试即可（hermes.cmd up 的探测会自愈） |
 | M9 | PowerShell 管道 `docker build ... \| Select-Object -Last N` 把全部输出缓冲到结束 | 后台任务要直写日志文件（`cmd /c "... > x.log 2>&1"`），别过 Select-Object |
+| M10 | i18n.js 顶层 `function t` 与 main.js 顶层 `const { t } = ...` 跨脚本撞名 → **SyntaxError 直接杀掉整个 main.js**，且 UI 静态文本照常显示（i18n.js 还活着），极易误判"功能正常" | 库脚本一律包 IIFE 只暴露 window.hermesI18n；浏览器验证必须看 console 而非只看渲染 |
+| M10 | PowerShell 内联 `python -c` 嵌套引号又被吞（后台静默失败） | 同一坑第三次：凡是带引号/中文的 python 一律落 .py 文件执行，别内联 |

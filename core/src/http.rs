@@ -34,18 +34,19 @@ pub async fn auth(base: &str, name: &str, register: bool) -> Result<Auth, String
         .json(&AuthBody { name })
         .send()
         .await
-        .map_err(|e| format!("HTTP 请求失败: {e}"))?;
+        .map_err(|e| format!("auth:net: {e}"))?;
 
     let status = resp.status().as_u16();
     if status == 409 {
-        return Err("用户已存在，请改用「登录」".into());
+        // 稳定码：UI 层本地化（auth:exists / auth:not_found），核心不掺语言
+        return Err("auth:exists".into());
     }
     if status == 401 {
-        return Err("用户不存在，请先「注册」".into());
+        return Err("auth:not_found".into());
     }
     if !(200..300).contains(&status) {
         let body = resp.text().await.unwrap_or_default();
-        return Err(format!("HTTP {status}: {body}"));
+        return Err(format!("auth:status{status}: {body}"));
     }
 
     // 2xx：名字落账（HTTP 语义层），WS 地址带上身份
