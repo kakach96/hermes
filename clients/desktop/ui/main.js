@@ -310,6 +310,9 @@ async function doAuth(register) {
     // core 回吐的是稳定码（http.rs），UI 层负责本地化
     if (msg.startsWith("auth:exists")) msg = t("auth.exists");
     else if (msg.startsWith("auth:not_found")) msg = t("auth.notFound");
+    else if (msg.startsWith("auth:net")) msg = t("auth.netFail");
+    else if (msg.startsWith("auth:status"))
+      msg = t("auth.serverErr", { code: msg.slice("auth:status".length).split(":")[0] });
     $("auth-error").textContent = msg;
   } finally {
     $("login-btn").disabled = false;
