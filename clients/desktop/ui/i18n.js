@@ -58,6 +58,21 @@
       "misc.bridgeFail": "事件桥注册失败: {msg}",
       "misc.err": "错误: {msg}",
       "misc.unknownEv": "未知事件: {ev}",
+
+      // ---- P0-3 服务端/核心码化消息 ----
+      "notice.room.joined": "{name} 加入了房间",
+      "notice.room.left": "{name} 离开了房间",
+      "notice.crypto.failed": "加密失败（{detail}）",
+      "error.user_invalid": "用户名不合法（1~32 个字符）",
+      "error.user_exists": "用户名已被占用",
+      "error.space_exists": "空间已存在",
+      "error.space_channel_invalid": "空间/频道名不合法（只允许小写字母/数字/_/-，1~32 位）",
+      "error.space_missing": "空间不存在",
+      "error.channel_exists": "频道已存在",
+      "error.channel_forbidden": "无权建频道（需空间 owner/admin）",
+      "error.login_already": "本连接已登录，如需换身份请退出登录后重连",
+      "error.login_identity_conflict": "不能以其他身份入房（连接身份不匹配）",
+      "error.internal": "服务内部错误：{detail}",
     },
 
     en: {
@@ -106,6 +121,21 @@
       "misc.bridgeFail": "Event bridge failed: {msg}",
       "misc.err": "Error: {msg}",
       "misc.unknownEv": "Unknown event: {ev}",
+
+      // ---- P0-3 server/core coded messages ----
+      "notice.room.joined": "{name} joined the room",
+      "notice.room.left": "{name} left the room",
+      "notice.crypto.failed": "Encryption failed ({detail})",
+      "error.user_invalid": "Invalid username (1-32 characters)",
+      "error.user_exists": "That name is already taken",
+      "error.space_exists": "Space already exists",
+      "error.space_channel_invalid": "Invalid space/channel name (lowercase letters, digits, _ and - only, 1-32 chars)",
+      "error.space_missing": "No such space",
+      "error.channel_exists": "Channel already exists",
+      "error.channel_forbidden": "Not allowed to create channels (requires space owner/admin)",
+      "error.login_already": "This connection is already signed in — sign out first to switch identity",
+      "error.login_identity_conflict": "Cannot join under a different identity (connection mismatch)",
+      "error.internal": "Server internal error: {detail}",
     },
   };
 
@@ -153,9 +183,16 @@
   // main.js 注册：切语言后重绘主题图标、房间标签、大厅列表等动态文案
   window.__hermesOnLang = undefined;
 
+  /// 键存在性（UI 判断服务端 code 是否有本地化文案）
+  function has(key) {
+    return (HERMES_I18N[lang] || {}).hasOwnProperty(key)
+      || HERMES_I18N.zh.hasOwnProperty(key);
+  }
+
   applyI18nStatic();
   window.hermesI18n = {
     t,
+    has,
     setLang,
     cycleLang: () => setLang(lang === "zh" ? "en" : "zh"),
     get lang() {

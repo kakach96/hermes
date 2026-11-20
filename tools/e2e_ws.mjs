@@ -51,8 +51,9 @@ await sleep(500);
 
 check("双方收到 joined", alice.messages.some((m) => m.type === "joined") &&
   bob.messages.some((m) => m.type === "joined"));
+// P0-3：通知带语义 code（文案由客户端本地化）
 check("Alice 收到加入通知(含自己)", alice.messages.some(
-  (m) => m.type === "notice" && m.text.includes("Alice 加入了房间")));
+  (m) => m.type === "notice" && m.code === "room.joined" && m.name === "Alice"));
 
 // 消息广播
 alice.send(JSON.stringify({ type: "msg", text: "端到端!", dedup_id: "e1" }));

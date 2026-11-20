@@ -256,8 +256,12 @@ pub async fn connect(
                             });
                         }
                         CryptoEvent::Failed { context, detail } => {
+                            // 码化（P0-3）：crypto 失败不再拼中文句子上 wire，
+                            // UI 按 context 分类本地化
                             let _ = ev_tx.send(ClientEvent::Notice {
-                                text: format!("加密 {context}：{detail}"),
+                                text: None,
+                                code: Some("crypto.failed".into()),
+                                name: Some(format!("{context}|{detail}")),
                             });
                         }
                     }
@@ -273,7 +277,10 @@ pub async fn connect(
                         Ok(Message::Text(t)) => t.to_string(),
                         Ok(_) => continue,
                         Err(e) => {
-                            let _ = ev_tx.send(ClientEvent::Error { reason: e.to_string() });
+                            let _ = ev_tx.send(ClientEvent::Error {
+                                reason: e.to_string(),
+                                code: None,
+                            });
                             let _ = ev_tx.send(ClientEvent::Disconnected);
                             break;
                         }
@@ -344,11 +351,12 @@ pub async fn connect(
                         ServerFrame::LoggedIn { name } => {
                             let _ = ev_tx.send(ClientEvent::LoggedIn { name });
                         }
-                        ServerFrame::Notice { text } => {
-                            let _ = ev_tx.send(ClientEvent::Notice { text });
+                        ServerFrame::Notice { text, code, name } => {
+                            // 码化通知透传（UI 本地化）；老 text 帧原样
+                            let _ = ev_tx.send(ClientEvent::Notice { text, code, name });
                         }
-                        ServerFrame::Error { reason } => {
-                            let _ = ev_tx.send(ClientEvent::Error { reason });
+                        ServerFrame::Error { reason, code } => {
+                            let _ = ev_tx.send(ClientEvent::Error { reason, code });
                         }
                         // ---- 空间/频道目录：直接投影给视图层 ----
                         ServerFrame::Spaces { spaces } => {

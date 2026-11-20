@@ -216,7 +216,10 @@ fn handle_text(state: State, text: String, conn: mist.WebsocketConnection) {
         n -> {
           let _ = mist.send_text_frame(
             conn,
-            error_json("本连接已登录为 " <> n <> "，如需换身份请重连"),
+            error_json2(
+              "login_already",
+              "本连接已登录为 " <> n <> "，如需换身份请重连",
+            ),
           )
           mist.continue(state)
         }
@@ -228,7 +231,7 @@ fn handle_text(state: State, text: String, conn: mist.WebsocketConnection) {
         "" ->
           case meta.check_user(name) {
             Error(reason) -> {
-              let _ = mist.send_text_frame(conn, error_json(reason))
+              let _ = mist.send_text_frame(conn, error_json_meta(reason))
               mist.continue(state)
             }
             Ok(_) -> {
@@ -245,7 +248,10 @@ fn handle_text(state: State, text: String, conn: mist.WebsocketConnection) {
             other -> {
               let _ = mist.send_text_frame(
                 conn,
-                error_json("已登录为 " <> n <> "，不能以 " <> other <> " 入房"),
+                error_code_json("login_identity_conflict", "已登录为 " <> n <> "，不能以 " <> other <> " 入房", [
+                  #("name", json.string(n)),
+                  #("other", json.string(other)),
+                ]),
               )
               mist.continue(state)
             }
@@ -366,7 +372,7 @@ fn space_create(
 ) -> mist.Next(State, bus.Delivered) {
   case meta.space_create(state.store, space, name) {
     Error(reason) -> {
-      let _ = mist.send_text_frame(conn, error_json(reason))
+      let _ = mist.send_text_frame(conn, error_json_meta(reason))
       mist.continue(state)
     }
     Ok(Nil) -> {
@@ -407,7 +413,7 @@ fn channel_create(
     |> result.try(fn(_) { meta.channel_create(state.store, space, channel) })
   case result {
     Error(reason) -> {
-      let _ = mist.send_text_frame(conn, error_json(reason))
+      let _ = mist.send_text_frame(conn, error_json_meta(reason))
       mist.continue(state)
     }
     Ok(Nil) -> {
@@ -570,13 +576,13 @@ fn join_ok(
 fn login(state: State, name: String, conn) {
   case meta.check_user(name) {
     Error(reason) -> {
-      let _ = mist.send_text_frame(conn, error_json(reason))
+      let _ = mist.send_text_frame(conn, error_json_meta(reason))
       mist.continue(state)
     }
     Ok(_) ->
       case meta.user_touch(state.store, name) {
         Error(reason) -> {
-          let _ = mist.send_text_frame(conn, error_json(reason))
+          let _ = mist.send_text_frame(conn, error_json_meta(reason))
           mist.continue(state)
         }
         Ok(Nil) -> {
@@ -664,7 +670,17 @@ fn deliver(state: State, seq: Int, payload: BitArray, conn) {
       }
     }
     Ok(envelope.Notice(text)) -> {
+      // 老格式的文本通知（流里的历史消息）：透传，客户端按原文渲染
       let _ = mist.send_text_frame(conn, notice_json(text))
+      mist.continue(state)
+    }
+    // P0-3 码化通知：带语义 code，客户端本地化文案
+    Ok(envelope.Join(name)) -> {
+      let _ = mist.send_text_frame(conn, notice_code_json("room.joined", name))
+      mist.continue(state)
+    }
+    Ok(envelope.Part(name)) -> {
+      let _ = mist.send_text_frame(conn, notice_code_json("room.left", name))
       mist.continue(state)
     }
     // 成员名单快照：转发给客户端（core 用它更新加密目标名单）
@@ -733,6 +749,17 @@ fn notice_json(text: String) -> String {
   |> json.to_string
 }
 
+/// 码化通知帧：{type:notice, code, name}。UI 按 code 本地化，
+/// reason 级的调试兜底不再上 wire（客户端字典缺失时回落键名）
+fn notice_code_json(code: String, name: String) -> String {
+  json.object([
+    #("type", json.string("notice")),
+    #("code", json.string(code)),
+    #("name", json.string(name)),
+  ])
+  |> json.to_string
+}
+
 fn members_json(members: List(String)) -> String {
   json.object([
     #("type", json.string("members")),
@@ -741,9 +768,49 @@ fn members_json(members: List(String)) -> String {
   |> json.to_string
 }
 
-fn error_json(reason: String) -> String {
-  json.object([#("type", json.string("error")), #("reason", json.string(reason))])
+/// 码化错误帧：{type:error, code, reason}。
+/// code 是 wire 契约（UI 本地化），reason 只是服务端调试兜底。
+/// param 按 code 约定携带（如 space_invalid 的 space）。
+fn error_code_json(code: String, reason: String, params: List(#(String, json.Json))) -> String {
+  json.object([
+    #("type", json.string("error")),
+    #("code", json.string(code)),
+    #("reason", json.string(reason)),
+    #("params", json.object(params)),
+  ])
   |> json.to_string
+}
+
+/// 无参数错误的便捷封装
+fn error_json2(code: String, reason: String) -> String {
+  error_code_json(code, reason, [])
+}
+
+/// 旧签名（内部错误：码不枚举，走 internal + 原文）
+fn error_json(reason: String) -> String {
+  error_code_json("internal", reason, [])
+}
+
+/// meta 层错误的码化映射（与 api.gleam 的 auth_error_parts 同一手法：
+/// 按 reason 前缀识别语义 → code；未匹配落 internal 保留原文）
+fn error_json_meta(reason: String) -> String {
+  case reason {
+    "用户名不合法" <> _ ->
+      error_code_json("user_invalid", reason, [])
+    "用户已存在" <> _ ->
+      error_code_json("user_exists", reason, [])
+    "空间已存在" <> _ ->
+      error_code_json("space_exists", reason, [])
+    "空间/频道名不合法" <> _ ->
+      error_code_json("space_channel_invalid", reason, [])
+    "空间不存在" <> _ ->
+      error_code_json("space_missing", reason, [])
+    "频道已存在" <> _ ->
+      error_code_json("channel_exists", reason, [])
+    "无权在" <> _ ->
+      error_code_json("channel_forbidden", reason, [])
+    _ -> error_code_json("internal", reason, [])
+  }
 }
 
 fn logged_in_json(name: String) -> String {

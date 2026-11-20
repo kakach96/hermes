@@ -54,6 +54,7 @@ core 内置 libsignal 会话（加密里程碑见 M6）。
 | M13 | 离线消息根修：加密目标从"在线名册"改为"空间持久成员"（joined.targets，fjall members 域），离线成员也有密文落流、重进按游标补投 | ✅ 四套 e2e 全绿 |
 | M14 | 密码认证：PBKDF2-HMAC-SHA256（OTP BIF，60 万轮）+ 恒时比较；一次性令牌桥（HTTP 签发 → WS ?token= 消费即删）；错误机器码（exists/bad_password/no_password/weak_password…）；老账号用注册认领设密 | ✅ e2e_auth 10 项全绿 + 全量回归 |
 | M15 | P0-2 密钥静态加密：Argon2id(登录密码)→KEK + AES-256-GCM 信封（keys_*/sessions_*）；透明迁移老明文文件；错密码 Init 必败 | ✅ core 21/21（信封落盘/迁移/错密码回归） |
+| M16 | P0-3 服务端 message code：notice 走语义变体（Join/Part → room.joined/room.left 帧），error 帧带 code+params（reason 降级调试兜底），crypto 失败码化（crypto.failed） | ✅ server 16 + core 21 + 四套 e2e 全按 code 断言 |
 
 v0 明确**不做**（留给第二轮）：树状 fanout、QUIC、UniFFI、iOS/Android 视图、
 ProVerif、RocksDB。任何文档冲突以本表为准。
@@ -67,8 +68,7 @@ ProVerif、RocksDB。任何文档冲突以本表为准。
 
 1. ~~**会话状态持久化**（ratchet 落盘）~~ ✅ M11 完成
 2. ~~**密钥静态加密**~~ ✅ M15 完成
-3. **服务端 message code**：notice/error payload 出稳定码，客户端本地化
-   （M10 尾巴，趁热打铁）
+3. ~~**服务端 message code**~~ ✅ M16 完成
 
 ### P1 —— 产品形态跃迁：从"能聊天"到"像 IM"
 

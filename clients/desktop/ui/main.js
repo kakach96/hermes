@@ -5,7 +5,7 @@
 // 离开房间回大厅不断连；退出登录才真正断开。
 
 const { invoke } = window.__TAURI__.core;
-const { t, setLang, cycleLang } = window.hermesI18n;
+const { t, has, setLang, cycleLang } = window.hermesI18n;
 const { listen } = window.__TAURI__.event;
 
 const $ = (id) => document.getElementById(id);
@@ -237,19 +237,33 @@ function handle(ev) {
       addRow(ev.from, ev.text, ev.from === myName);
       if (ev.seq > lastSeq) lastSeq = ev.seq;
       break;
-    case "notice":
-      if (inRoom) addLine("notice", ev.text);
+    case "notice": {
+      // P0-3：码化通知优先本地化；老 text 帧（流里的历史消息）原样渲染
+      let line;
+      if (ev.code === "room.joined" && ev.name) line = t("notice.room.joined", { name: ev.name });
+      else if (ev.code === "room.left" && ev.name) line = t("notice.room.left", { name: ev.name });
+      else if (ev.code === "crypto.failed" && ev.name) {
+        // name 携带 "context|detail"，本地化壳 + 原始细节
+        const [context, detail] = String(ev.name).split("|");
+        line = t("notice.crypto.failed", { detail: `${context}: ${detail}` });
+      } else line = ev.text || "";
+      if (inRoom && line) addLine("notice", line);
       break;
+    }
     case "room_left":
       inRoom = false;
       $("input").disabled = true;
       $("send").disabled = true;
       showHome();
       break;
-    case "error":
-      if (inRoom) addLine("err", ev.reason);
-      else showHint(ev.reason, true);
+    case "error": {
+      // 码化错误本地化；无码（老帧/内部）原样显示
+      let msg = ev.reason;
+      if (ev.code && has(`error.${ev.code}`)) msg = t(`error.${ev.code}`);
+      if (inRoom) addLine("err", msg);
+      else showHint(msg, true);
       break;
+    }
     case "disconnected":
       handleDisconnected();
       break;

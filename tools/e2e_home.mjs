@@ -81,7 +81,7 @@ check("换频道再进", got(ws, "joined"));
 // 6. 冒名 join 拒绝
 send(ws, { type: "join", name: "Mallory", cursor: 0, space: S, channel: "dev" });
 await sleep(300);
-check("冒名 join 被拒", got(ws, "error", (m) => m.reason.includes("已登录为")));
+check("冒名 join 被拒", got(ws, "error", (m) => m.code === "login_identity_conflict"));
 
 // 7. 离房期间的消息：重进同频道后必须补投（GUI 用户的核心场景）
 send(ws, { type: "join", cursor: 0, space: S, channel: "dev" });

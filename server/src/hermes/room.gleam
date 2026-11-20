@@ -67,10 +67,9 @@ fn handle(state: State, msg: RoomMsg) -> actor.Next(State, RoomMsg) {
       // 重进房间 = 移到队首（去重）；名册是活水，不 persist
       let others = list.filter(state.members, fn(m) { m != name })
       let members = [name, ..others]
-      // presence 走非持久订阅，不进 JetStream（重放时不会收到陈旧通知）
-      bus.publish(state.bus, state.presence_subject, envelope.Notice(
-        name <> " 加入了房间",
-      ))
+      // presence 走非持久订阅，不进 JetStream（重放时不会收到陈旧通知）。
+      // P0-3：进出通知用语义变体（session 转 code 帧，文案由客户端本地化）
+      bus.publish(state.bus, state.presence_subject, envelope.Join(name))
       // 成员名单快照广播：后来者加入时，先来者的名单也要更新（否则
       // 先来者发消息只会发给入房时刻的成员 —— 名单漂移的坑）
       bus.publish(state.bus, state.presence_subject, envelope.Members(
@@ -106,9 +105,7 @@ fn handle(state: State, msg: RoomMsg) -> actor.Next(State, RoomMsg) {
         False -> actor.continue(state)
         True -> {
           let members = list.filter(state.members, fn(m) { m != name })
-          bus.publish(state.bus, state.presence_subject, envelope.Notice(
-            name <> " 离开了房间",
-          ))
+          bus.publish(state.bus, state.presence_subject, envelope.Part(name))
           bus.publish(state.bus, state.presence_subject, envelope.Members(
             members,
           ))

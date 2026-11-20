@@ -32,9 +32,9 @@ pub fn join_and_presence_test() {
   let assert Ok(["Alice"]) = process.receive(reply, 1000)
 
   // 房间应向 presence subject 发布加入通知
-  let assert Ok(
-    bus.Publish("hermes.presence.t1", envelope.Notice("Alice 加入了房间")),
-  ) = process.receive(fake_bus, 1000)
+  // P0-3：加入通知走语义变体（session 端转 code 帧由客户端本地化）
+  let assert Ok(bus.Publish("hermes.presence.t1", envelope.Join("Alice"))) =
+    process.receive(fake_bus, 1000)
 }
 
 pub fn msg_publishes_chat_envelope_test() {
@@ -91,10 +91,8 @@ pub fn leave_updates_members_test() {  let fake_bus = process.new_subject()
   let reply = process.new_subject()
   process.send(hall, room.Join("Alice", reply))
   let assert Ok(["Alice"]) = process.receive(reply, 1000)
-  let assert Ok(bus.Publish(
-    "hermes.presence.t3",
-    envelope.Notice("Alice 加入了房间"),
-  )) = process.receive(fake_bus, 1000)
+  let assert Ok(bus.Publish("hermes.presence.t3", envelope.Join("Alice"))) =
+    process.receive(fake_bus, 1000)
   // Join 还会广播成员名单快照（成员活水机制），先排空
   let assert Ok(bus.Publish(
     "hermes.presence.t3",
@@ -102,10 +100,8 @@ pub fn leave_updates_members_test() {  let fake_bus = process.new_subject()
   )) = process.receive(fake_bus, 1000)
 
   process.send(hall, room.Leave("Alice"))
-  let assert Ok(bus.Publish(
-    "hermes.presence.t3",
-    envelope.Notice("Alice 离开了房间"),
-  )) = process.receive(fake_bus, 1000)
+  let assert Ok(bus.Publish("hermes.presence.t3", envelope.Part("Alice"))) =
+    process.receive(fake_bus, 1000)
   // 退房还会广播成员名单快照（成员活水机制）
   let assert Ok(bus.Publish(
     "hermes.presence.t3",

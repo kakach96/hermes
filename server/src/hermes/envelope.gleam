@@ -14,6 +14,10 @@ pub type Envelope {
   Notice(text: String)
   /// 成员名单快照（走 presence 通道，不进流）：入房/退房时广播
   Members(list: List(String))
+  /// 加入通知（P0-3 码化：session 转 notice 帧带 code，文案由客户端本地化）
+  Join(name: String)
+  /// 离开通知（同上）
+  Part(name: String)
   /// 端到端加密消息：server 只做不透明转发，永远看不到明文。
   /// to 是目标成员名；所有订阅者都会收到，只有 to 本人才解密处理。
   Enc(to: String, from: String, body: String, dedup_id: String)
@@ -32,6 +36,17 @@ pub fn encode(envelope: Envelope) -> String {
       json.object([
         #("type", json.string("notice")),
         #("text", json.string(text)),
+      ])
+    // P0-3 码化：进/出通知带语义变体，客户端本地化文案
+    Join(name) ->
+      json.object([
+        #("type", json.string("join_notice")),
+        #("name", json.string(name)),
+      ])
+    Part(name) ->
+      json.object([
+        #("type", json.string("part_notice")),
+        #("name", json.string(name)),
       ])
     Members(list) ->
       json.object([
@@ -72,6 +87,15 @@ fn decode_text(text: String) -> Result(Envelope, String) {
       "notice" -> {
         use text <- decode.field("text", decode.string)
         decode.success(Notice(text))
+      }
+      // P0-3 码化的进出通知（重放里的老 Notice(text) 仍走上一分支）
+      "join_notice" -> {
+        use name <- decode.field("name", decode.string)
+        decode.success(Join(name))
+      }
+      "part_notice" -> {
+        use name <- decode.field("name", decode.string)
+        decode.success(Part(name))
       }
       "members" -> {
         use members <- decode.field("members", decode.list(decode.string))

@@ -70,7 +70,7 @@ check("空间列表含 S(owner Alice)", spaces &&
 bob.send(JSON.stringify({ type: "channel_create", space: S, channel: "bobchan" }));
 await sleep(300);
 check("Bob 建频道被拒（member）", bob.messages.some(
-  (m) => m.type === "error" && m.reason.includes("无权")));
+  (m) => m.type === "error" && m.code === "channel_forbidden"));
 alice.send(JSON.stringify({ type: "channel_create", space: S, channel: "random" }));
 await sleep(300);
 check("Alice 建频道成功（owner）", alice.messages.some(

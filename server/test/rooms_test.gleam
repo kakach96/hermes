@@ -49,8 +49,8 @@ pub fn room_delivers_message_test() {
   let assert Ok(["alice"]) = process.receive(reply, 1000)
   process.send(hall, room.Msg("alice", "hello", "dedup-1"))
 
-  // Join 广播两帧 presence（Notice + Members 快照），排空后 chat 才落房间 subject
-  let assert Ok(bus.Publish(_presence, envelope.Notice(_))) =
+  // Join 广播两帧 presence（Join + Members 快照），排空后 chat 才落房间 subject
+  let assert Ok(bus.Publish(_presence, envelope.Join(_))) =
     process.receive(fake_bus, 1000)
   let assert Ok(bus.Publish(_presence2, envelope.Members(_))) =
     process.receive(fake_bus, 1000)
@@ -68,7 +68,7 @@ pub fn room_subject_encodes_hierarchy_test() {
   let space = "s_" <> unique_id()
   let assert Ok(hall) = rooms.room_of(manager, space, "general")
   process.send(hall, room.Join("bob", process.new_subject()))
-  let assert Ok(bus.Publish(subject, envelope.Notice(_))) =
+  let assert Ok(bus.Publish(subject, envelope.Join(_))) =
     process.receive(fake_bus, 1000)
   // hermes.presence.<space>.<channel> —— 层级可读且可按空间通配订阅
   let assert True =
