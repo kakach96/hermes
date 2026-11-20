@@ -118,9 +118,6 @@ pub async fn connect(
         let mut established: HashSet<String> = HashSet::new();
         // 已发出 prekey_fetch、尚无结果的成员（防止重复刷请求）
         let mut fetching: HashSet<String> = HashSet::new();
-        // 已提示过"暂存"的离线成员：每个成员每连接只提一次，防刷屏。
-        // 消息本体留在 pending，对方上线后的下一次发送会重新 fetch 并送达
-        let mut unreachable: HashSet<String> = HashSet::new();
         // 懒建会话期间的待发队列：peer -> [(dedup_id, text)]
         let mut pending: HashMap<String, Vec<(String, String)>> = HashMap::new();
 
@@ -145,7 +142,6 @@ pub async fn connect(
                                 members.clear();
                                 targets.clear();
                                 fetching.clear();
-                                unreachable.clear();
                                 pending.clear();
                                 let _ = ev_tx.send(ClientEvent::RoomLeft);
                             }
@@ -307,16 +303,10 @@ pub async fn connect(
                         ServerFrame::PrekeyBundle { for_name, bundle } => {
                             fetching.remove(&for_name);
                             if bundle.is_empty() {
-                                // 离线成员：首提一次（每成员每连接一次），后续发送静默。
-                                // pending 队列保留：对方上线后的下一次发送重新
-                                // fetch → establish → 冲掉全部暂存消息
-                                if unreachable.insert(for_name.clone()) {
-                                    let _ = ev_tx.send(ClientEvent::Notice {
-                                        text: format!(
-                                            "与 {for_name} 尚未建立会话，消息已暂存，对方上线后送达"
-                                        ),
-                                    });
-                                }
+                                // 离线成员：静默。pending 队列保留，对方上线后的
+                                // 下一次发送重新 fetch → establish → 冲掉全部暂存。
+                                // "暂存"是收件箱模型的默认行为，逐个提示只是噪音
+                                //（在线状态展示留给房间成员列表，见 PLAN P1）
                             } else {
                                 let _ = crypto_tx.send(CryptoCmd::Establish {
                                     peer: for_name,
