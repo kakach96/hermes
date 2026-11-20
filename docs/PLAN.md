@@ -53,6 +53,37 @@ core 内置 libsignal 会话（加密里程碑见 M6）。
 v0 明确**不做**（留给第二轮）：树状 fanout、QUIC、UniFFI、iOS/Android 视图、
 ProVerif、RocksDB。任何文档冲突以本表为准。
 
+## 第二轮执行序（2026-11-20 排定）
+
+> 排序原则：先补会咬人的坑（P0），再做产品形态跃迁（P1），
+> 然后架构深化（P2，BEAM 学习目标的主战场），远景与卫生项见缝插针（P3）。
+
+### P0 —— 补短：会咬人的坑与刚留的尾巴
+
+1. **会话状态持久化**（ratchet 落盘）：已知边界里唯一会造成"消息解不开"的
+   ——重启后重放窗口旧密文可能永远解不开；E2E 体验闭环的最后一块
+2. **密钥静态加密**：身份私钥明文 JSON 躺盘；范围小（core crypto 一处，
+   AES-GCM + 口令派生，协议层仍是 libsignal，不违背禁自研约定）
+3. **服务端 message code**：notice/error payload 出稳定码，客户端本地化
+   （M10 尾巴，趁热打铁）
+
+### P1 —— 产品形态跃迁：从"能聊天"到"像 IM"
+
+4. **core 本地消息库**（SQLite 候选）：收件箱模型下半场，多端体验地基
+5. **密码/令牌认证 + 多设备身份**："名字即账号"撑不起 iOS/Android
+6. **UniFFI + iOS/Android**：宪法客户端形态兑现（依赖 4/5 就位）
+
+### P2 —— 架构深化：BEAM 主战场
+
+7. **树状 fanout**（Manifold 思路）：宪法级设计约定的兑现，配 bench 压测
+8. **房间空闲回收**：定时器自杀 + 管理器清理（可与 7 打包）
+9. **Protobuf codegen**：wire 正式化（server/core/工具三处同改，宜一次做完）
+
+### P3 —— 远景与卫生项
+
+QUIC（等 proto 后收益才清晰）、ProVerif（应在加密功能完备后做）、
+RocksDB 对比 ADR、e2e 自清理、Docker 构建国内源、Cargo workspace 统一
+
 ### 原路线图（存档，仍按模块为第二轮的深化顺序）
 
 ### Phase 1：Gleam Actor 聊天室 ✅（已通过本机验证：gleam 1.19.2 / OTP 29.1.2）
