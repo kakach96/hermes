@@ -853,7 +853,7 @@ mod tests {
 
         alice_tx.send(CryptoCmd::Init { name: "Alice".into() }).unwrap();
         let registered = alice_ev.blocking_recv().expect("registered event");
-        let CryptoEvent::Registered { bundle_json } = registered else {
+        let CryptoEvent::Registered { bundle_json: _ } = registered else {
             panic!("expected Registered, got {registered:?}");
         };
 

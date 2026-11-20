@@ -48,7 +48,7 @@
 
 | type | 字段 | 语义 |
 | --- | --- | --- |
-| `joined` | `members: string[]` | 入房回执：当前成员名单（新成员在前） |
+| `joined` | `members: string[]` `targets: string[]` | 入房回执。members = 当前在线（presence 显示）；targets = **空间持久成员**（加密分发目标——离线成员也永远有一份密文留在流里，重进按游标补投） |
 | `chat` | `from` `text` `dedup_id` `seq` | 明文聊天（legacy）；seq 用于推进本地游标 |
 | `enc` | `from` `body` `dedup_id` `seq` | 发给本人的密文（server 已按 `to` 过滤） |
 | `notice` | `text` | presence（加入/离开/掉线）。**不重放** |

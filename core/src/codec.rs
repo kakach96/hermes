@@ -19,7 +19,9 @@ pub struct SpaceEntry {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerFrame {
-    Joined { members: Vec<String> },
+    /// 入房回执：members = 当前在线（presence 显示）；targets = 空间持久成员
+    /// （加密分发目标——离线成员也永远有一份密文留在流里，重进按游标补投）
+    Joined { members: Vec<String>, targets: Vec<String> },
     Chat { from: String, text: String, dedup_id: String, seq: u64 },
     /// 发给本人的端到端密文（server 已按 to 过滤；base64 密文）
     Enc { from: String, body: String, dedup_id: String, seq: u64 },
@@ -145,6 +147,18 @@ mod tests {
         assert!(json.contains(r#""dedup_id":"d""#));
     }
 
+    #[test]
+    fn joined_frame_carries_targets() {
+        let json = r#"{"type":"joined","members":["Alice"],"targets":["Alice","Bob"]}"#;
+        let frame = ServerFrame::parse(json).expect("parse");
+        match frame {
+            ServerFrame::Joined { members, targets } => {
+                assert_eq!(members, vec!["Alice".to_string()]);
+                assert_eq!(targets, vec!["Alice".to_string(), "Bob".to_string()]);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
     #[test]
     fn spaces_frame_roundtrip() {
         let json = r#"{"type":"spaces","spaces":[{"name":"lobby","owner":"a"},{"name":"dev","owner":"b"}]}"#;

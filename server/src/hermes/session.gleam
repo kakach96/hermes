@@ -18,6 +18,7 @@ import gleam/http/request
 import gleam/http/response
 import gleam/int
 import gleam/json
+import gleam/list
 import gleam/option
 import gleam/result
 import mist
@@ -525,7 +526,11 @@ fn join_ok(
               mist.continue(state)
             }
             Ok(chat_token) -> {
-              let _ = mist.send_text_frame(conn, joined_json(members))
+              let _ =
+                mist.send_text_frame(
+                  conn,
+                  joined_json(members, durable_targets(state, space, members)),
+                )
               mist.continue(
                 State(
                   ..state,
@@ -662,12 +667,31 @@ fn deliver(state: State, seq: Int, payload: BitArray, conn) {
 
 // ---------- 线上 JSON ----------
 
-fn joined_json(members: List(String)) -> String {
+fn joined_json(members: List(String), targets: List(String)) -> String {
   json.object([
     #("type", json.string("joined")),
     #("members", json.array(members, json.string)),
+    #("targets", json.array(targets, json.string)),
   ])
   |> json.to_string
+}
+
+/// 加密目标 = 空间**持久成员**（fjall members 域）∪ 当前在线。
+/// 这是收件箱模型对 pairwise 加密的自洽解：消息永远给每个空间成员
+/// 留一份密文在流里——接收方离线时重进按游标补投即可拿到。
+/// 在线名单（members）只负责 presence 显示，不参与加密分发。
+fn durable_targets(state: State, space: String, live: List(String)) -> List(String) {
+  let durable = case meta.member_list(state.store, space) {
+    Ok(pairs) ->
+      list.map(pairs, fn(pair) {
+        let #(name, _) = pair
+        name
+      })
+    Error(_) -> []
+  }
+  // live 里可能有 meta 落账延迟的刚进成员：补上（fjall 写是同步完成的，
+  // 这里只是防御性兜底）
+  list.append(durable, list.filter(live, fn(m) { !list.contains(durable, m) }))
 }
 
 fn chat_json(seq: Int, from: String, text: String, dedup_id: String) -> String {

@@ -113,6 +113,8 @@ pub async fn connect(
         let mut me = String::new();
         let mut crypto_inited = !name.is_empty();
         let mut members: Vec<String> = Vec::new();
+        // 加密目标：空间持久成员（joined.targets），离线成员也在内
+        let mut targets: Vec<String> = Vec::new();
         let mut established: HashSet<String> = HashSet::new();
         // 已发出 prekey_fetch、尚无结果的成员（防止重复刷请求）
         let mut fetching: HashSet<String> = HashSet::new();
@@ -138,6 +140,7 @@ pub async fn connect(
                                 let _ = sink.send(Message::text(ClientFrame::Leave.to_json())).await;
                                 joined = false;
                                 members.clear();
+                                targets.clear();
                                 fetching.clear();
                                 pending.clear();
                                 let _ = ev_tx.send(ClientEvent::RoomLeft);
@@ -199,7 +202,7 @@ pub async fn connect(
                                 seq: cursor,
                             });
                             dispatch_outgoing(
-                                &text, &dedup_id, &members, &me, &mut established,
+                                &text, &dedup_id, &targets, &me, &mut established,
                                 &mut fetching, &mut pending, &crypto_tx, &mut sink,
                             )
                             .await;
@@ -277,12 +280,16 @@ pub async fn connect(
                         continue; // 坏帧丢弃
                     };
                     match frame {
-                        ServerFrame::Joined { members: list } => {
+                        ServerFrame::Joined { members: list, targets: t } => {
+                            // 显示名单（presence）与加密目标（持久成员）分家：
+                            // members 只管 UI 计数，targets 驱动加密分发与懒建
                             members = list.clone();
+                            targets = t;
                             let _ = ev_tx.send(ClientEvent::Joined { members: list });
-                            // 对名单里其他成员懒建加密会话；自己不 fetch——
-                            // 自己的注册包此刻可能还没落账，必然撞空，留到首次发送时懒建
-                            for peer in members.iter() {
+                            // 对目标名单里的成员懒建加密会话（含离线成员——
+                            // 发送方要给不在场的人也留一份密文）；
+                            // 自己不 fetch——自己的注册包此刻可能还没落账
+                            for peer in targets.iter() {
                                 if peer == &me { continue; }
                                 if !established.contains(peer) && !fetching.contains(peer) {
                                     fetching.insert(peer.clone());
@@ -363,11 +370,13 @@ pub async fn connect(
     Ok((Handle { cmd_tx }, ev_rx))
 }
 
-/// 一条待发消息 → 对名单里每个成员走"已建会话则加密 / 未建则排队并取注册包"
+/// 一条待发消息 → 对**持久成员目标集**里每个成员走"已建会话则加密 / 未建则
+/// 排队并取注册包"。离线成员也在目标集里——他们的那份密文先落流，
+/// 上线后按游标补投（收件箱模型的 pairwise 实现）。
 async fn dispatch_outgoing(
     text: &str,
     dedup_id: &str,
-    members: &[String],
+    targets: &[String],
     me: &str,
     established: &mut HashSet<String>,
     fetching: &mut HashSet<String>,
@@ -375,7 +384,7 @@ async fn dispatch_outgoing(
     crypto_tx: &std_mpsc::Sender<CryptoCmd>,
     sink: &mut (impl SinkExt<Message> + Unpin),
 ) {
-    for peer in members {
+    for peer in targets {
         let peer = peer.clone();
         if peer == me {
             continue; // 自己的消息不走加密分发（本地已回显）
