@@ -49,6 +49,7 @@ core 内置 libsignal 会话（加密里程碑见 M6）。
 | M8 | HTTP 认证平面：mist 复用为 REST（/v1/register|login|spaces|channels），WS ?name= 升级即登录，core http.rs + reqwest（无 TLS） | ✅ e2e_auth 12 项全绿 + 全量回归 |
 | M9 | Docker 部署：多阶段镜像（sidecar/shipment/erlang:29-slim）、compose + 官方 NATS 镜像（tag 锁 2.15.3）、server 环境变量覆盖（NATS 地址/sidecar 路径/数据目录） | ✅ 容器化栈四套 e2e 全绿 |
 | M10 | 客户端 i18n（zh/en）：i18n.js 字典 + data-i18n 静态刷 + t() 动态插值，菜单切换并记忆；core 认证错误改稳定码（auth:*）由 UI 本地化 | ✅ 浏览器双语全链路验证 |
+| M11 | P0-1 会话状态持久化：ratchet SessionRecord + 对端身份键落盘（sessions_<name>.json），每次会话变化整表快照 | ✅ session_survives_restart 回归：重启解旧密文 + 会话续推 |
 
 v0 明确**不做**（留给第二轮）：树状 fanout、QUIC、UniFFI、iOS/Android 视图、
 ProVerif、RocksDB。任何文档冲突以本表为准。
@@ -60,8 +61,7 @@ ProVerif、RocksDB。任何文档冲突以本表为准。
 
 ### P0 —— 补短：会咬人的坑与刚留的尾巴
 
-1. **会话状态持久化**（ratchet 落盘）：已知边界里唯一会造成"消息解不开"的
-   ——重启后重放窗口旧密文可能永远解不开；E2E 体验闭环的最后一块
+1. ~~**会话状态持久化**（ratchet 落盘）~~ ✅ M11 完成
 2. **密钥静态加密**：身份私钥明文 JSON 躺盘；范围小（core crypto 一处，
    AES-GCM + 口令派生，协议层仍是 libsignal，不违背禁自研约定）
 3. **服务端 message code**：notice/error payload 出稳定码，客户端本地化

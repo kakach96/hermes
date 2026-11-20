@@ -122,7 +122,7 @@ reconnect join{cursor} ──► session starts a JetStream ordered consumer
   **rolling our own protocol is forbidden** (constitution).
 - Identity keys persist across restarts (same name = same identity, forever),
   stored as plain JSON (v0 boundary; at-rest encryption is round 2).
-- Ratchet session state is not persisted: old ciphertexts replayed from
+- Ratchet session state IS persisted (sessions_<name>.json): ciphertexts from before a restart still decrypt; keys and sessions remain plaintext at rest for now (at-rest encryption is P0-2).
   offline gaps may fall outside the window and fail to decrypt (known v0 edge).
 
 ## 5. Key semantic invariants (changes require an ADR)

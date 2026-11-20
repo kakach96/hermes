@@ -26,13 +26,15 @@ use futures_util::FutureExt as _;
 use libsignal_protocol::{
     CiphertextMessage, DeviceId, GenericSignedPreKey as _, IdentityKey, IdentityKeyPair,
     IdentityKeyStore as _, InMemSignalProtocolStore, KeyPair, KyberPreKeyStore as _,
-    KyberPreKeyRecord, PreKeyBundle, PreKeySignalMessage, ProtocolAddress,
+    KyberPreKeyRecord, PreKeyBundle, PreKeySignalMessage, ProtocolAddress, SessionRecord,
     SessionStore as _, SignalMessage, SignalProtocolError, SignedPreKeyRecord,
     SignedPreKeyStore as _, Timestamp, initiate_session, kem, message_decrypt,
     message_encrypt,
 };
 use rand::rngs::StdRng;
 use rand::{Rng as _, SeedableRng as _};
+
+use std::collections::HashSet;
 
 /// 内部错误：统一把 libsignal 的错误族转成字符串。
 /// （InvalidDeviceId 是 libsignal_core 私有模块的类型，只能闭包处理）
@@ -85,6 +87,11 @@ pub type CryptoEventRx = tokio::sync::mpsc::UnboundedReceiver<CryptoEvent>;
 struct Crypto {
     local: ProtocolAddress,
     store: InMemSignalProtocolStore,
+    /// 会话登记表：哪些 peer 有会话。InMem store 的内部 map 私有不可遍历，
+    /// 落盘靠这张表 + SessionStore/IdentityKeyStore 的 trait 方法逐个存取
+    peers: HashSet<String>,
+    /// 身份/会话落盘目录（同名 = 同身份，见 KeyMaterial 持久化）
+    keys_dir: String,
 }
 
 /// 起 crypto 线程。channel 两端都是线程安全的。
@@ -111,7 +118,17 @@ pub fn spawn(keys_dir: String) -> (CryptoCmdTx, CryptoEventRx) {
                 let event = match cmd {
                     CryptoCmd::Establish { peer, bundle_json } =>
                         match establish(crypto, &peer, &bundle_json) {
-                            Ok(()) => CryptoEvent::Established { peer },
+                            Ok(()) => {
+                                // 新会话：登记并落盘（establish 本身改了 store）
+                                crypto.peers.insert(peer.clone());
+                                if let Err(e) = save_sessions(crypto) {
+                                    let _ = ev_tx.send(CryptoEvent::Failed {
+                                        context: "persist sessions".into(),
+                                        detail: e.0,
+                                    });
+                                }
+                                CryptoEvent::Established { peer }
+                            }
                             Err(e) => CryptoEvent::Failed {
                                 context: format!("establish {peer}"),
                                 detail: e.0,
@@ -119,11 +136,20 @@ pub fn spawn(keys_dir: String) -> (CryptoCmdTx, CryptoEventRx) {
                         },
                     CryptoCmd::Encrypt { peer, dedup_id, plaintext } =>
                         match encrypt(crypto, &peer, &plaintext) {
-                            Ok(body) => CryptoEvent::Encrypted {
-                                peer,
-                                dedup_id,
-                                body_b64: b64e(&body),
-                            },
+                            Ok(body) => {
+                                // 发送棘轮也推进了会话状态
+                                if let Err(e) = save_sessions(crypto) {
+                                    let _ = ev_tx.send(CryptoEvent::Failed {
+                                        context: "persist sessions".into(),
+                                        detail: e.0,
+                                    });
+                                }
+                                CryptoEvent::Encrypted {
+                                    peer,
+                                    dedup_id,
+                                    body_b64: b64e(&body),
+                                }
+                            }
                             Err(e) => CryptoEvent::Failed {
                                 context: format!("encrypt {peer}"),
                                 detail: e.0,
@@ -131,7 +157,17 @@ pub fn spawn(keys_dir: String) -> (CryptoCmdTx, CryptoEventRx) {
                         },
                     CryptoCmd::Decrypt { peer, body_b64 } =>
                         match decrypt(crypto, &peer, &body_b64) {
-                            Ok(text) => CryptoEvent::Decrypted { peer, text },
+                            Ok(text) => {
+                                // PreKey 首条解密会新建会话，登记表补上
+                                crypto.peers.insert(peer.clone());
+                                if let Err(e) = save_sessions(crypto) {
+                                    let _ = ev_tx.send(CryptoEvent::Failed {
+                                        context: "persist sessions".into(),
+                                        detail: e.0,
+                                    });
+                                }
+                                CryptoEvent::Decrypted { peer, text }
+                            }
                             Err(e) => CryptoEvent::Failed {
                                 context: format!("decrypt {peer}"),
                                 detail: e.0,
@@ -167,7 +203,7 @@ fn init(
     keys_dir: &str,
     ev: &tokio::sync::mpsc::UnboundedSender<CryptoEvent>,
 ) -> Option<Crypto> {
-    let result: Option<Result<(InMemSignalProtocolStore, ProtocolAddress, String), CryptoError>> =
+    let result: Option<Result<(InMemSignalProtocolStore, ProtocolAddress, HashSet<String>, String), CryptoError>> =
         (|| async {
             let device = device_id()?;
             let material = match load_key_material(&name, keys_dir) {
@@ -220,15 +256,23 @@ fn init(
             )?;
 
             let local = ProtocolAddress::new(name.clone(), device);
+            // 恢复会话状态（ratchet record + 对端身份键）：重启后重放窗口内
+            // 的旧密文依然可解——P0-1 修复的正是这个已知边界
+            let peers = load_sessions(&mut store, &name, keys_dir, device)?;
             let bundle_json = bundle_json_of(&bundle)?;
-            Ok((store, local, bundle_json))
+            Ok((store, local, peers, bundle_json))
         })()
         .now_or_never();
 
     match result {
-        Some(Ok((store, local, bundle_json))) => {
+        Some(Ok((store, local, peers, bundle_json))) => {
             let _ = ev.send(CryptoEvent::Registered { bundle_json: bundle_json.clone() });
-            Some(Crypto { local, store })
+            Some(Crypto {
+                local,
+                store,
+                peers,
+                keys_dir: keys_dir.to_string(),
+            })
         }
         Some(Err(e)) => {
             let _ = ev.send(CryptoEvent::Failed { context: "init".into(), detail: e.0 });
@@ -408,6 +452,90 @@ fn decrypt(crypto: &mut Crypto, peer: &str, body_b64: &str) -> Result<String, Cr
         String::from_utf8(plaintext).map_err(|_| CryptoError("解密结果不是 UTF-8".into()))
     };
     run.now_or_never().unwrap_or_else(|| Err(CryptoError("decrypt 意外挂起".into())))
+}
+
+// ---------- ratchet session persistence ----------
+//
+// 会话状态（双棘轮 SessionRecord）+ 对端身份键落盘为 sessions_<name>.json。
+// InMem store 的内部 map 私有不可遍历：靠 Crypto.peers 登记表 +
+// SessionStore / IdentityKeyStore 的 trait 方法逐个存取。
+// 每次 Establish/Encrypt/Decrypt 成功后整表快照（玩具规模 N 极小，
+// 简单粗暴换正确性）。
+
+fn sessions_file(keys_dir: &str, name: &str) -> std::path::PathBuf {
+    std::path::Path::new(keys_dir).join(format!("sessions_{name}.json"))
+}
+
+fn load_sessions(
+    store: &mut InMemSignalProtocolStore,
+    name: &str,
+    keys_dir: &str,
+    device: DeviceId,
+) -> Result<HashSet<String>, CryptoError> {
+    let text = match std::fs::read_to_string(sessions_file(keys_dir, name)) {
+        Ok(t) => t,
+        // 没有历史会话文件 = 全新身份，正常
+        Err(_) => return Ok(HashSet::new()),
+    };
+    let v: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| CryptoError(e.to_string()))?;
+    let obj = v
+        .as_object()
+        .ok_or_else(|| CryptoError("sessions 文件不是对象".into()))?;
+
+    let mut peers = HashSet::new();
+    for (peer, entry) in obj {
+        let session = entry["session"].as_str().map(b64d);
+        let identity = entry["identity"].as_str().map(b64d);
+        let addr = ProtocolAddress::new(peer.clone(), device);
+        let run = async {
+            if let Some(bytes) = &session {
+                let record = SessionRecord::deserialize(bytes)?;
+                store.session_store.store_session(&addr, &record).await?;
+            }
+            if let Some(bytes) = &identity {
+                let key = IdentityKey::decode(bytes)?;
+                store.identity_store.save_identity(&addr, &key).await?;
+            }
+            Ok::<(), CryptoError>(())
+        };
+        run.now_or_never()
+            .unwrap_or_else(|| Err(CryptoError("load session 意外挂起".into())))?;
+        peers.insert(peer.clone());
+    }
+    Ok(peers)
+}
+
+fn save_sessions(crypto: &Crypto) -> Result<(), CryptoError> {
+    let run = async {
+        let mut obj = serde_json::Map::new();
+        for peer in &crypto.peers {
+            let addr = ProtocolAddress::new(peer.clone(), device_id()?);
+            let session = crypto.store.session_store.load_session(&addr).await?;
+            let identity = crypto.store.identity_store.get_identity(&addr).await?;
+            // SessionRecord::serialize 返回 Result：失败时该条跳过（None），
+            // 落盘文件里表现为空 session，下轮 load 不会恢复它
+            let session_b64 = session
+                .map(|s| s.serialize().ok().map(|b| b64e(&b)))
+                .flatten();
+            obj.insert(
+                peer.clone(),
+                serde_json::json!({
+                    "session": session_b64,
+                    "identity": identity.map(|i| b64e(&i.serialize())),
+                }),
+            );
+        }
+        let text = serde_json::Value::Object(obj).to_string();
+        std::fs::write(
+            sessions_file(&crypto.keys_dir, crypto.local.name()),
+            text,
+        )
+        .map_err(|e| CryptoError(e.to_string()))?;
+        Ok::<(), CryptoError>(())
+    };
+    run.now_or_never()
+        .unwrap_or_else(|| Err(CryptoError("save sessions 意外挂起".into())))
 }
 
 // ---------- bundle JSON 编解码 ----------
@@ -753,5 +881,94 @@ mod tests {
         };
         assert_eq!(peer, "Alice");
         assert_eq!(text, "thread-level");
+    }
+
+    /// P0-1 回归：会话状态持久化——bob"重启"（线程退场、同名重建）后，
+    /// 重启前加密的密文依然可解，会话继续推进也不受影响。
+    #[test]
+    fn session_survives_restart() {
+        // 每次运行独立目录，防上一轮会话残留干扰断言
+        let dir = std::env::temp_dir()
+            .join(format!("hermes-sess-{}", uuid::Uuid::new_v4()))
+            .to_string_lossy()
+            .into_owned();
+
+        let (alice_tx, mut alice_ev) = spawn(dir.clone());
+        let (bob_tx, mut bob_ev) = spawn(dir.clone());
+
+        alice_tx.send(CryptoCmd::Init { name: "Alice".into() }).unwrap();
+        let CryptoEvent::Registered { .. } = alice_ev.blocking_recv().unwrap() else {
+            panic!("alice registered")
+        };
+        bob_tx.send(CryptoCmd::Init { name: "Bob".into() }).unwrap();
+        let CryptoEvent::Registered { bundle_json: bob_bundle } =
+            bob_ev.blocking_recv().unwrap()
+        else {
+            panic!("bob registered")
+        };
+
+        // 建会话 + 第一轮往返（bob 的会话在这里诞生并落盘）
+        alice_tx
+            .send(CryptoCmd::Establish { peer: "Bob".into(), bundle_json: bob_bundle })
+            .unwrap();
+        let CryptoEvent::Established { .. } = alice_ev.blocking_recv().unwrap() else {
+            panic!("established")
+        };
+
+        let send_one = |ev: &mut tokio::sync::mpsc::UnboundedReceiver<CryptoEvent>,
+                       text: &str| {
+            alice_tx
+                .send(CryptoCmd::Encrypt {
+                    peer: "Bob".into(),
+                    dedup_id: text.into(),
+                    plaintext: text.as_bytes().to_vec(),
+                })
+                .unwrap();
+            let CryptoEvent::Encrypted { body_b64, .. } = ev.blocking_recv().unwrap() else {
+                panic!("encrypted {text}")
+            };
+            (text.to_string(), body_b64)
+        };
+        let (m1, body1) = send_one(&mut alice_ev, "before-restart");
+        bob_tx
+            .send(CryptoCmd::Decrypt { peer: "Alice".into(), body_b64: body1 })
+            .unwrap();
+        let CryptoEvent::Decrypted { text: got, .. } = bob_ev.blocking_recv().unwrap() else {
+            panic!("bob decrypted m1")
+        };
+        assert_eq!(got, m1);
+
+        // 重启前的最后一条密文（bob 还没解过 —— 重放窗口场景）
+        let (_m2, body2) = send_one(&mut alice_ev, "encrypted-while-away");
+
+        // bob 退场：线程随命令通道关闭而结束
+        drop(bob_tx);
+        drop(bob_ev);
+
+        // 同名重建：身份与**会话状态**都从盘上恢复
+        let (bob2_tx, mut bob2_ev) = spawn(dir.clone());
+        bob2_tx.send(CryptoCmd::Init { name: "Bob".into() }).unwrap();
+        let CryptoEvent::Registered { .. } = bob2_ev.blocking_recv().unwrap() else {
+            panic!("bob2 registered")
+        };
+
+        bob2_tx
+            .send(CryptoCmd::Decrypt { peer: "Alice".into(), body_b64: body2 })
+            .unwrap();
+        let ev = bob2_ev.blocking_recv().unwrap();
+        let CryptoEvent::Decrypted { text, .. } = ev else {
+            panic!("bob2 expected Decrypted, got {ev:?}")
+        };
+        assert_eq!(text, "encrypted-while-away");
+
+        // 会话继续推进（重启不影响后续往返）
+        let (_m3, body3) = send_one(&mut alice_ev, "after-restart");
+        bob2_tx
+            .send(CryptoCmd::Decrypt { peer: "Alice".into(), body_b64: body3 })
+            .unwrap();
+        let CryptoEvent::Decrypted { text, .. } = bob2_ev.blocking_recv().unwrap() else {
+            panic!("bob2 decrypted m3")
+        };
+        assert_eq!(text, "after-restart");
     }
 }
